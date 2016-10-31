@@ -143,6 +143,18 @@ sealed trait Matrix extends Serializable {
   private[spark] def foreachActive(f: (Int, Int, Double) => Unit)
 
   /**
+   * Find the number of non-zero active values.
+   */
+  @Since("2.0.0")
+  def numNonzeros: Int
+
+  /**
+   * Find the number of values stored explicitly. These values can be zero as well.
+   */
+  @Since("2.0.0")
+  def numActives: Int
+
+  /**
    * Converts this matrix to a sparse matrix.
    *
    * @param columnMajor Whether the values of the resulting sparse matrix should be in column major
@@ -159,7 +171,6 @@ sealed trait Matrix extends Serializable {
    */
   @Since("2.1.0")
   def toDense(columnMajor: Boolean): DenseMatrix
-
 
   /**
    * Returns a matrix in either dense or sparse format, whichever uses less storage.
@@ -206,20 +217,8 @@ sealed trait Matrix extends Serializable {
     Matrices.getSparseSize(nnz, numPtrs)
   }
 
-  /** Get the current size in bytes of this `Matrix`. Useful for testing */
+  /** Gets the current size in bytes of this `Matrix`. Useful for testing */
   private[ml] def getSizeInBytes: Long
-
-  /**
-   * Find the number of non-zero active values.
-   */
-  @Since("2.0.0")
-  def numNonzeros: Int
-
-  /**
-   * Find the number of values stored explicitly. These values can be zero as well.
-   */
-  @Since("2.0.0")
-  def numActives: Int
 }
 
 /**
@@ -350,8 +349,7 @@ class DenseMatrix @Since("2.0.0") (
   override def numActives: Int = values.length
 
   /**
-   * Generate a `SparseMatrix` from the given `DenseMatrix`. The new matrix will have isTransposed
-   * set to false.
+   * Generate a `SparseMatrix` from the given `DenseMatrix` in column major order.
    */
   @Since("2.0.0")
   def toSparse: SparseMatrix = toSparse(columnMajor = true)
@@ -362,7 +360,7 @@ class DenseMatrix @Since("2.0.0") (
    * @param columnMajor Whether the resulting `SparseMatrix` values will be in column major order.
    */
   @Since("2.1.0")
-  def toSparse(columnMajor: Boolean): SparseMatrix = {
+  override def toSparse(columnMajor: Boolean): SparseMatrix = {
     if (!columnMajor) this.transpose.toSparse(columnMajor = true).transpose
     else {
       val spVals: MArrayBuilder[Double] = new MArrayBuilder.ofDouble
@@ -389,7 +387,7 @@ class DenseMatrix @Since("2.0.0") (
   }
 
   /**
-   * Generate a `DenseMatrix` from this `DenseMatrix`.
+   * Generate a `DenseMatrix` from this `DenseMatrix` in column major order.
    */
   @Since("2.1.0")
   def toDense: DenseMatrix = toDense(columnMajor = true)
@@ -400,27 +398,22 @@ class DenseMatrix @Since("2.0.0") (
    * @param columnMajor Whether the resulting `DenseMatrix` values will be in column major order.
    */
   @Since("2.1.0")
-  def toDense(columnMajor: Boolean): DenseMatrix = {
+  override def toDense(columnMajor: Boolean): DenseMatrix = {
     if (!(isTransposed ^ columnMajor)) {
-      if (isTransposed) {
-        // it is row major and we want column major
-        val newValues = Array.fill[Double](numCols * numRows)(0.0)
-        var j = 0
-        while (j < numCols * numRows) {
-          newValues(j / numCols + (j % numCols) * numRows) = values(j)
-          j += 1
+      val newValues = new Array[Double](numCols * numRows)
+      var j = 0
+      while (j < numCols * numRows) {
+        val newIndex = if (isTransposed) {
+          // it is row major and we want column major
+          j / numCols + (j % numCols) * numRows
+        } else {
+          // it is column major and we want row major
+          j / numRows + (j % numRows) * numCols
         }
-        new DenseMatrix(numRows, numCols, newValues, isTransposed = false)
-      } else {
-        // it is col major and we want row major
-        val newValues = Array.fill[Double](values.length)(0.0)
-        var j = 0
-        while (j < numCols * numRows) {
-          newValues(j / numRows + (j % numRows) * numCols) = values(j)
-          j += 1
-        }
-        new DenseMatrix(numRows, numCols, newValues, isTransposed = true)
+        newValues(newIndex) = values(j)
+        j += 1
       }
+      new DenseMatrix(numRows, numCols, newValues, isTransposed = !isTransposed)
     } else {
       this
     }
@@ -622,64 +615,6 @@ class SparseMatrix @Since("2.0.0") (
      }
   }
 
-  /**
-   * Generate a `SparseMatrix` from this `SparseMatrix`, removing explicit zero values if they
-   * exist. The resulting `SparseMatrix` will have `isTransposed` set to false.
-   */
-  @Since("2.1.0")
-  def toSparse: SparseMatrix = toSparse(true)
-
-  /**
-   * Generate a `SparseMatrix` from this `SparseMatrix`, removing explicit zero values if they
-   * exist.
-   *
-   * @param columnMajor Whether or not the resulting `SparseMatrix` values are in column major
-   *                    order.
-   */
-  @Since("2.1.0")
-  def toSparse(columnMajor: Boolean): SparseMatrix = {
-    if (!(columnMajor ^ isTransposed)) {
-      // breeze transpose rearranges values in column major and removes explicit zeros
-      if (!isTransposed) {
-        // it is row major and we want col major
-        val breezeTransposed = asBreeze.asInstanceOf[BSM[Double]].t
-        Matrices.fromBreeze(breezeTransposed).transpose.asInstanceOf[SparseMatrix]
-      } else {
-        // it is col major and we want row major
-        val breezeTransposed = asBreeze.asInstanceOf[BSM[Double]]
-        Matrices.fromBreeze(breezeTransposed).asInstanceOf[SparseMatrix]
-      }
-    } else {
-      val nnz = numNonzeros
-      if (nnz != numActives) {
-        val rr = new Array[Int](nnz)
-        val vv = new Array[Double](nnz)
-        val numPtrs = if (isTransposed) numRows else numCols
-        val cc = new Array[Int](numPtrs + 1)
-        var nzIdx = 0
-        var j = 0
-        while (j < numPtrs) {
-          var idx = colPtrs(j)
-          val idxEnd = colPtrs(j + 1)
-          cc(j) = nzIdx
-          while (idx < idxEnd) {
-            if (values(idx) != 0.0) {
-              vv(nzIdx) = values(idx)
-              rr(nzIdx) = rowIndices(idx)
-              nzIdx += 1
-            }
-            idx += 1
-          }
-          j += 1
-        }
-        cc(j) = nnz
-        new SparseMatrix(numRows, numCols, cc, rr, vv, isTransposed = isTransposed)
-      } else {
-        this
-      }
-    }
-  }
-
   override def apply(i: Int, j: Int): Double = {
     val ind = index(i, j)
     if (ind < 0) 0.0 else values(ind)
@@ -752,12 +687,73 @@ class SparseMatrix @Since("2.0.0") (
     }
   }
 
+  override def numNonzeros: Int = values.count(_ != 0)
+
+  override def numActives: Int = values.length
+
   /**
-   * Generate a `DenseMatrix` from the given `SparseMatrix`. The new matrix will have isTransposed
-   * set to false.
+   * Generate a `SparseMatrix` from this `SparseMatrix` in column major, removing explicit zero
+   * values if they exist.
+   */
+  @Since("2.1.0")
+  def toSparse: SparseMatrix = toSparse(columnMajor = true)
+
+  /**
+   * Generate a `SparseMatrix` from this `SparseMatrix`, removing explicit zero values if they
+   * exist.
+   *
+   * @param columnMajor Whether or not the resulting `SparseMatrix` values are in column major
+   *                    order.
+   */
+  @Since("2.1.0")
+  override def toSparse(columnMajor: Boolean): SparseMatrix = {
+    if (!(columnMajor ^ isTransposed)) {
+      // breeze transpose rearranges values in column major and removes explicit zeros
+      if (!isTransposed) {
+        // it is row major and we want col major
+        val breezeTransposed = asBreeze.asInstanceOf[BSM[Double]].t
+        Matrices.fromBreeze(breezeTransposed).transpose.asInstanceOf[SparseMatrix]
+      } else {
+        // it is col major and we want row major
+        val breezeTransposed = asBreeze.asInstanceOf[BSM[Double]]
+        Matrices.fromBreeze(breezeTransposed).asInstanceOf[SparseMatrix]
+      }
+    } else {
+      val nnz = numNonzeros
+      if (nnz != numActives) {
+        val rr = new Array[Int](nnz)
+        val vv = new Array[Double](nnz)
+        val numPtrs = if (isTransposed) numRows else numCols
+        val cc = new Array[Int](numPtrs + 1)
+        var nzIdx = 0
+        var j = 0
+        while (j < numPtrs) {
+          var idx = colPtrs(j)
+          val idxEnd = colPtrs(j + 1)
+          cc(j) = nzIdx
+          while (idx < idxEnd) {
+            if (values(idx) != 0.0) {
+              vv(nzIdx) = values(idx)
+              rr(nzIdx) = rowIndices(idx)
+              nzIdx += 1
+            }
+            idx += 1
+          }
+          j += 1
+        }
+        cc(j) = nnz
+        new SparseMatrix(numRows, numCols, cc, rr, vv, isTransposed = isTransposed)
+      } else {
+        this
+      }
+    }
+  }
+
+  /**
+   * Generate a `DenseMatrix` from the given `SparseMatrix` in column major order.
    */
   @Since("2.0.0")
-  def toDense: DenseMatrix = toDense(true)
+  def toDense: DenseMatrix = toDense(columnMajor = true)
 
   /**
    * Generate a `DenseMatrix` from the given `SparseMatrix`.
@@ -769,10 +765,6 @@ class SparseMatrix @Since("2.0.0") (
     if (columnMajor) new DenseMatrix(numRows, numCols, toArray)
     else new DenseMatrix(numRows, numCols, this.transpose.toArray, isTransposed = true)
   }
-
-  override def numNonzeros: Int = values.count(_ != 0)
-
-  override def numActives: Int = values.length
 
   override def colIter: Iterator[Vector] = {
     if (isTransposed) {
