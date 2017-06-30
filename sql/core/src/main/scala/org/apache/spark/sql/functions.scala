@@ -20,15 +20,16 @@ package org.apache.spark.sql
 import scala.collection.JavaConverters._
 import scala.language.implicitConversions
 import scala.reflect.runtime.universe.{typeTag, TypeTag}
-import scala.util.Try
+import scala.util.{Success, Try}
 import scala.util.control.NonFatal
 
 import org.apache.spark.annotation.InterfaceStability
 import org.apache.spark.sql.catalyst.ScalaReflection
-import org.apache.spark.sql.catalyst.analysis.{Star, UnresolvedFunction}
+import org.apache.spark.sql.catalyst.analysis.{Star, UnresolvedAlias, UnresolvedExtractValue, UnresolvedFunction}
 import org.apache.spark.sql.catalyst.encoders.ExpressionEncoder
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.aggregate._
+import org.apache.spark.sql.catalyst.expressions.objects.{LambdaVariable, MapObjects}
 import org.apache.spark.sql.catalyst.plans.logical.{HintInfo, ResolvedHint}
 import org.apache.spark.sql.execution.SparkSqlParser
 import org.apache.spark.sql.expressions.UserDefinedFunction
@@ -3176,6 +3177,59 @@ object functions {
    * @since 2.3.0
    */
   def map_values(e: Column): Column = withExpr { MapValues(e.expr) }
+
+  /**
+    * Applies the given lambda function to every element of a collection of items.
+    * The column containing the items has to be an ArrayType. The returning is also
+    * an ArrayType. This is similar to a typical map operation, but where the lambda
+    * function is expressed using [[Column]] to [[Column]] lambda function.
+    *
+    * @param e a column containing an array of the structs.
+    * @param f a lambda function that will be applied on each element in the input column
+    *
+    * @group collection_funcs
+    * @since 2.4.0
+    */
+  def map_objects(e: Column)(f: Column => Column): Column = withExpr {
+    // tries to resolve the data type that will be output by the expression
+//    def baseType(expr: Expression): Try[DataType] = expr match {
+//      case MapObjects(_, _, _, lf, _, _) => baseType(lf).map(ArrayType(_))
+//      case LambdaVariable(_, _, elementType, _) => Success(elementType)
+//      case other => Try(other.dataType)
+//    }
+//
+//    // tries to create a copy of the expression where the data types can be resolved
+//    def baseExpr(expr: Expression): Expression = expr.transformUp {
+//      case UnresolvedAlias(child, Some(aliasFn)) => Alias(child, aliasFn(child))()
+//      case UnresolvedExtractValue(child, extraction) => ExtractValue(child, extraction, _ == _)
+//    }
+//
+//    def resolvedElementType(func: String, expr: Expression): DataType = {
+//      resolvedType(expr) match {
+//    }
+//
+//    def resolvedType(expr: Expression): Try[DataType] = baseType(baseExpr(expr))
+
+
+    val inputExpr = e.expr
+
+    val inputDataType = inputExpr.transformUp {
+      case UnresolvedAlias(child, Some(aliasFn)) => Alias(child, aliasFn(child))()
+      case UnresolvedExtractValue(child, extraction) => ExtractValue(child, extraction, _ == _)
+    } match {
+      case MapObjects(_, _, _, lf, _, _) => baseType(lf).map(ArrayType(_))
+      case LambdaVariable(_, _, elementType, _) => Success(elementType)
+      case other => Try(other.dataType)
+    }
+
+
+    val function: (Expression) => Expression = withExpr _ andThen f andThen (_.expr)
+
+    MapObjects.apply(
+      function,
+      inputExpr,
+      inputExpr.dataType)
+  }
 
   //////////////////////////////////////////////////////////////////////////////////////////////
   //////////////////////////////////////////////////////////////////////////////////////////////
