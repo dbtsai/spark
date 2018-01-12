@@ -726,7 +726,63 @@ case class MapObjects private(
   }
 }
 
+object FilterObjects {
+  private val curId = new java.util.concurrent.atomic.AtomicInteger()
 
+  /**
+   * Construct an instance of MapObjects case class.
+   *
+   * @param function The function applied on the collection elements.
+   * @param inputData An expression that when evaluated returns a collection object.
+   * @param elementType The data type of elements in the collection.
+   * @param elementNullable When false, indicating elements in the collection are always
+   *                        non-null value.
+   * @param customCollectionCls Class of the resulting collection (returning ObjectType)
+   *                            or None (returning ArrayType)
+   */
+  def apply(
+             function: Expression => Expression,
+             inputData: Expression,
+             elementType: DataType,
+             elementNullable: Boolean = true,
+             customCollectionCls: Option[Class[_]] = None): MapObjects = {
+    val id = curId.getAndIncrement()
+    val loopValue = s"FilterObjects_loopValue$id"
+    val loopIsNull = if (elementNullable) {
+      s"FilterObjects_loopIsNull$id"
+    } else {
+      "false"
+    }
+    val loopVar = LambdaVariable(loopValue, loopIsNull, elementType, elementNullable)
+    FilterObjects(
+      loopValue, loopIsNull, elementType, function(loopVar), inputData, customCollectionCls)
+  }
+}
+
+/**
+ * Applies the given expression to every element of a collection of items, returning the result
+ * as an ArrayType or ObjectType. This is similar to a typical map operation, but where the
+ * predicate function is expressed using catalyst expressions.
+ *
+ * The type of the result is determined as follows:
+ * - ArrayType - when customCollectionCls is None
+ * - ObjectType(collection) - when customCollectionCls contains a collection class
+ *
+ * The following collection ObjectTypes are currently supported on input:
+ *   Seq, Array, ArrayData, java.util.List
+ *
+ * @param loopValue the name of the loop variable that used when iterate the collection, and used
+ *                  as input for the `lambdaFunction`
+ * @param loopIsNull the nullity of the loop variable that used when iterate the collection, and
+ *                   used as input for the `lambdaFunction`
+ * @param loopVarDataType the data type of the loop variable that used when iterate the collection,
+ *                        and used as input for the `lambdaFunction`
+ * @param predicate A function that take the `loopVar` as input, and used as lambda function
+ *                       to handle collection elements.
+ * @param inputData An expression that when evaluated returns a collection object.
+ * @param customCollectionCls Class of the resulting collection (returning ObjectType)
+ *                            or None (returning ArrayType)
+ */
 case class FilterObjects private(
     loopValue: String,
     loopIsNull: String,
