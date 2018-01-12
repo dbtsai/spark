@@ -29,6 +29,7 @@ import org.apache.spark.serializer._
 import org.apache.spark.sql.Row
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.ScalaReflection.universe.TermName
+import org.apache.spark.sql.catalyst.analysis.TypeCheckResult
 import org.apache.spark.sql.catalyst.encoders.RowEncoder
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.codegen.{CodegenContext, ExprCode}
@@ -725,40 +726,32 @@ case class MapObjects private(
   }
 }
 
-import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.analysis.{TypeCheckResult, UnresolvedExtractValue}
-import org.apache.spark.sql.catalyst.expressions.codegen.{CodegenContext, ExprCode}
-import org.apache.spark.sql.catalyst.expressions.objects.LambdaVariable
-import org.apache.spark.sql.catalyst.expressions.{BinaryExpression, BoundReference, Expression, ExtractValue, SpecificInternalRow}
-import org.apache.spark.sql.catalyst.util.{ArrayData, GenericArrayData}
-import org.apache.spark.sql.types._
 
-private[expressions] trait FilterObjectsCommon extends Expression {
+case class FilterObjects private(
+    loopValue: String,
+    loopIsNull: String,
+    loopVarDataType: DataType,
+    elementType: DataType,
+    predicate: Expression,
+    inputData: Expression,
+    customCollectionCls: Option[Class[_]]) extends Expression with NonSQLExpression {
 
-  def elementType: DataType
-  def items: Expression
-  def predicate: Expression
+  override def children: Seq[Expression] = inputData :: predicate :: Nil
+  override def nullable: Boolean = inputData.nullable
+  // override def sql: String = s"filterobjects(${items.sql})"
 
-  override def children: Seq[Expression] = items :: predicate :: Nil
-  override def nullable: Boolean = items.nullable
-  override def sql: String = s"filterobjects(${items.sql})"
-
-  override def checkInputDataTypes(): TypeCheckResult = (items.dataType, predicate.dataType) match {
-    case (ArrayType(_, _), BooleanType) => TypeCheckResult.TypeCheckSuccess
-    case _ => TypeCheckResult.TypeCheckFailure("Expected ArrayType, BooleanType")
-  }
+  override def checkInputDataTypes(): TypeCheckResult =
+    (inputData.dataType, predicate.dataType) match {
+      case (ArrayType(_, _), BooleanType) => TypeCheckResult.TypeCheckSuccess
+      case _ => TypeCheckResult.TypeCheckFailure("Expected ArrayType, BooleanType")
+    }
 
   override def dataType: DataType = ArrayType(elementType)
 
-}
-
-private[expressions] trait FilterObjectsEval extends FilterObjectsCommon {
-
   override def eval(input: InternalRow): Any = {
-    val arrayData = items.eval(input).asInstanceOf[ArrayData]
-    val len = arrayData.numElements()
+    val arrayData = inputData.eval(input).asInstanceOf[ArrayData]
     val boundPredicate = predicate.transformUp {
-      case LambdaVariable(_, _, typ) => BoundReference(0, typ, nullable = true)
+      case LambdaVariable(_, _, typ, nullable) => BoundReference(0, typ, nullable)
     }
 
     val array = arrayData.toObjectArray(elementType)
@@ -770,13 +763,6 @@ private[expressions] trait FilterObjectsEval extends FilterObjectsCommon {
     })
   }
 
-}
-
-private[expressions] trait FilterObjectsCodegen extends FilterObjectsCommon {
-
-  def loopValue: String
-  def loopIsNull: String
-
   override def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
 
     /*
@@ -786,10 +772,10 @@ private[expressions] trait FilterObjectsCodegen extends FilterObjectsCommon {
     */
 
     val elementJavaType = ctx.javaType(elementType)
-    val genInputData = items.genCode(ctx)
+    val genInputData = inputData.genCode(ctx)
     val genFilter = predicate.genCode(ctx)
-    ctx.addMutableState("boolean", loopIsNull, "")
-    ctx.addMutableState(elementJavaType, loopValue, "")
+    ctx.addMutableState(ctx.JAVA_BOOLEAN, loopIsNull, forceInline = true, useFreshName = false)
+    ctx.addMutableState(elementJavaType, loopValue, forceInline = true, useFreshName = false)
     val dataLength = ctx.freshName("dataLength")
     val filteredArray = ctx.freshName("convertedArray")
     val loopIndex = ctx.freshName("loopIndex")
