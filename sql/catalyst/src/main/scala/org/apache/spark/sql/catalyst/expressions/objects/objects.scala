@@ -725,6 +725,127 @@ case class MapObjects private(
   }
 }
 
+import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.catalyst.analysis.{TypeCheckResult, UnresolvedExtractValue}
+import org.apache.spark.sql.catalyst.expressions.codegen.{CodegenContext, ExprCode}
+import org.apache.spark.sql.catalyst.expressions.objects.LambdaVariable
+import org.apache.spark.sql.catalyst.expressions.{BinaryExpression, BoundReference, Expression, ExtractValue, SpecificInternalRow}
+import org.apache.spark.sql.catalyst.util.{ArrayData, GenericArrayData}
+import org.apache.spark.sql.types._
+
+private[expressions] trait FilterObjectsCommon extends Expression {
+
+  def elementType: DataType
+  def items: Expression
+  def predicate: Expression
+
+  override def children: Seq[Expression] = items :: predicate :: Nil
+  override def nullable: Boolean = items.nullable
+  override def sql: String = s"filterobjects(${items.sql})"
+
+  override def checkInputDataTypes(): TypeCheckResult = (items.dataType, predicate.dataType) match {
+    case (ArrayType(_, _), BooleanType) => TypeCheckResult.TypeCheckSuccess
+    case _ => TypeCheckResult.TypeCheckFailure("Expected ArrayType, BooleanType")
+  }
+
+  override def dataType: DataType = ArrayType(elementType)
+
+}
+
+private[expressions] trait FilterObjectsEval extends FilterObjectsCommon {
+
+  override def eval(input: InternalRow): Any = {
+    val arrayData = items.eval(input).asInstanceOf[ArrayData]
+    val len = arrayData.numElements()
+    val boundPredicate = predicate.transformUp {
+      case LambdaVariable(_, _, typ) => BoundReference(0, typ, nullable = true)
+    }
+
+    val array = arrayData.toObjectArray(elementType)
+    val holder = new SpecificInternalRow(Seq(elementType))
+    new GenericArrayData(array.filter {
+      inner =>
+        holder.update(0, inner)
+        boundPredicate.eval(holder).asInstanceOf[Boolean]
+    })
+  }
+
+}
+
+private[expressions] trait FilterObjectsCodegen extends FilterObjectsCommon {
+
+  def loopValue: String
+  def loopIsNull: String
+
+  override def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
+
+    /*
+      A lot of code here is copied from MapObjects. We can't do as much specialization as they do, because we don't have
+      access to the ObjectType class. But this will mainly be used on arrays of structs, so the specialization isn't
+      important anyway.
+    */
+
+    val elementJavaType = ctx.javaType(elementType)
+    val genInputData = items.genCode(ctx)
+    val genFilter = predicate.genCode(ctx)
+    ctx.addMutableState("boolean", loopIsNull, "")
+    ctx.addMutableState(elementJavaType, loopValue, "")
+    val dataLength = ctx.freshName("dataLength")
+    val filteredArray = ctx.freshName("convertedArray")
+    val loopIndex = ctx.freshName("loopIndex")
+    val filteredIndex = ctx.freshName("filteredIndex")
+
+
+    val elementTypeStr = ctx.boxedType(elementType)
+
+    // Because of the way Java defines nested arrays, we have to handle the syntax specially.
+    // Specifically, we have to insert the [$dataLength] in between the type and any extra nested
+    // array declarations (i.e. new String[1][]).
+    val arrayConstructor = if (elementTypeStr contains "[]") {
+      val rawType = elementTypeStr.takeWhile(_ != '[')
+      val arrayPart = elementTypeStr.reverse.takeWhile(c => c == '[' || c == ']').reverse
+      s"new $rawType[$dataLength]$arrayPart"
+    } else {
+      s"new $elementTypeStr[$dataLength]"
+    }
+
+    val getLength = s"${genInputData.value}.numElements()"
+    val getLoopVar = ctx.getValue(genInputData.value, elementType, loopIndex)
+
+    val loopNullCheck = s"$loopIsNull = ${genInputData.value}.isNullAt($loopIndex);"
+
+    val code = s"""
+      ${genInputData.code}
+      ${ctx.javaType(dataType)} ${ev.value} = ${ctx.defaultValue(dataType)};
+
+      if (!${genInputData.isNull}) {
+        $elementTypeStr[] $filteredArray = null;
+        int $dataLength = $getLength;
+        $filteredArray = $arrayConstructor;
+
+        int $loopIndex = 0;
+        int $filteredIndex = 0;
+        $elementJavaType $loopValue = ${ctx.defaultValue(elementType)};
+        while ($loopIndex < $dataLength) {
+          $loopValue = ($elementJavaType) ($getLoopVar);
+          $loopNullCheck
+          ${genFilter.code}
+          if (${genFilter.value}) {
+            $filteredArray[$filteredIndex++] = $loopValue;
+          }
+
+          $loopIndex += 1;
+        }
+
+        ${ev.value} = new ${classOf[GenericArrayData].getName}(
+          java.util.Arrays.copyOfRange($filteredArray, 0, $filteredIndex)
+        );
+      }
+    """
+    ev.copy(code = code, isNull = genInputData.isNull)
+  }
+}
+
 object CatalystToExternalMap {
   private val curId = new java.util.concurrent.atomic.AtomicInteger()
 
