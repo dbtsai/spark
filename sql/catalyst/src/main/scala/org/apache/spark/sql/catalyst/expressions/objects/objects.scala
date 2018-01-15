@@ -434,8 +434,9 @@ case class WrapOption(child: Expression, optType: DataType)
 }
 
 /**
- * A placeholder for the loop variable used in [[MapObjects]].  This should never be constructed
- * manually, but will instead be passed into the provided lambda function.
+ * A placeholder for the loop variable used in [[MapObjects]] and [[FilterObjects]].
+ * This should never be constructed manually, but will instead be passed into
+ * the provided lambda function.
  */
 case class LambdaVariable(
     value: String,
@@ -730,22 +731,19 @@ object FilterObjects {
   private val curId = new java.util.concurrent.atomic.AtomicInteger()
 
   /**
-   * Construct an instance of MapObjects case class.
+   * Construct an instance of FilterObjects case class.
    *
-   * @param function The function applied on the collection elements.
+   * @param condition An expression that returns a boolean value for filtering.
    * @param inputData An expression that when evaluated returns a collection object.
    * @param elementType The data type of elements in the collection.
    * @param elementNullable When false, indicating elements in the collection are always
    *                        non-null value.
-   * @param customCollectionCls Class of the resulting collection (returning ObjectType)
-   *                            or None (returning ArrayType)
    */
   def apply(
-             function: Expression => Expression,
-             inputData: Expression,
-             elementType: DataType,
-             elementNullable: Boolean = true,
-             customCollectionCls: Option[Class[_]] = None): MapObjects = {
+      condition: Predicate,
+      inputData: Expression,
+      elementType: DataType,
+      elementNullable: Boolean = true): FilterObjects = {
     val id = curId.getAndIncrement()
     val loopValue = s"FilterObjects_loopValue$id"
     val loopIsNull = if (elementNullable) {
@@ -753,9 +751,10 @@ object FilterObjects {
     } else {
       "false"
     }
+
     val loopVar = LambdaVariable(loopValue, loopIsNull, elementType, elementNullable)
     FilterObjects(
-      loopValue, loopIsNull, elementType, function(loopVar), inputData, customCollectionCls)
+      loopValue, loopIsNull, elementType, condition, inputData)
   }
 }
 
@@ -777,41 +776,37 @@ object FilterObjects {
  *                   used as input for the `lambdaFunction`
  * @param loopVarDataType the data type of the loop variable that used when iterate the collection,
  *                        and used as input for the `lambdaFunction`
- * @param predicate A function that take the `loopVar` as input, and used as lambda function
+ * @param condition A function that take the `loopVar` as input, and used as lambda function
  *                       to handle collection elements.
  * @param inputData An expression that when evaluated returns a collection object.
- * @param customCollectionCls Class of the resulting collection (returning ObjectType)
- *                            or None (returning ArrayType)
  */
 case class FilterObjects private(
     loopValue: String,
     loopIsNull: String,
     loopVarDataType: DataType,
-    elementType: DataType,
-    predicate: Expression,
-    inputData: Expression,
-    customCollectionCls: Option[Class[_]]) extends Expression with NonSQLExpression {
+    condition: Predicate,
+    inputData: Expression) extends Expression with NonSQLExpression {
 
-  override def children: Seq[Expression] = inputData :: predicate :: Nil
   override def nullable: Boolean = inputData.nullable
-  // override def sql: String = s"filterobjects(${items.sql})"
+
+  override def children: Seq[Expression] = condition :: inputData :: Nil
 
   override def checkInputDataTypes(): TypeCheckResult =
-    (inputData.dataType, predicate.dataType) match {
+    (inputData.dataType, condition.dataType) match {
       case (ArrayType(_, _), BooleanType) => TypeCheckResult.TypeCheckSuccess
       case _ => TypeCheckResult.TypeCheckFailure("Expected ArrayType, BooleanType")
     }
 
-  override def dataType: DataType = ArrayType(elementType)
+  override def dataType: DataType = inputData.dataType
 
   override def eval(input: InternalRow): Any = {
     val arrayData = inputData.eval(input).asInstanceOf[ArrayData]
-    val boundPredicate = predicate.transformUp {
+    val boundPredicate = condition.transformUp {
       case LambdaVariable(_, _, typ, nullable) => BoundReference(0, typ, nullable)
     }
 
-    val array = arrayData.toObjectArray(elementType)
-    val holder = new SpecificInternalRow(Seq(elementType))
+    val array = arrayData.toObjectArray(dataType)
+    val holder = new SpecificInternalRow(Seq(dataType))
     new GenericArrayData(array.filter {
       inner =>
         holder.update(0, inner)
@@ -827,9 +822,9 @@ case class FilterObjects private(
       important anyway.
     */
 
-    val elementJavaType = ctx.javaType(elementType)
+    val elementJavaType = ctx.javaType(dataType)
     val genInputData = inputData.genCode(ctx)
-    val genFilter = predicate.genCode(ctx)
+    val genFilter = condition.genCode(ctx)
     ctx.addMutableState(ctx.JAVA_BOOLEAN, loopIsNull, forceInline = true, useFreshName = false)
     ctx.addMutableState(elementJavaType, loopValue, forceInline = true, useFreshName = false)
     val dataLength = ctx.freshName("dataLength")
@@ -838,7 +833,7 @@ case class FilterObjects private(
     val filteredIndex = ctx.freshName("filteredIndex")
 
 
-    val elementTypeStr = ctx.boxedType(elementType)
+    val elementTypeStr = ctx.boxedType(dataType)
 
     // Because of the way Java defines nested arrays, we have to handle the syntax specially.
     // Specifically, we have to insert the [$dataLength] in between the type and any extra nested
@@ -852,7 +847,7 @@ case class FilterObjects private(
     }
 
     val getLength = s"${genInputData.value}.numElements()"
-    val getLoopVar = ctx.getValue(genInputData.value, elementType, loopIndex)
+    val getLoopVar = ctx.getValue(genInputData.value, dataType, loopIndex)
 
     val loopNullCheck = s"$loopIsNull = ${genInputData.value}.isNullAt($loopIndex);"
 
@@ -867,7 +862,7 @@ case class FilterObjects private(
 
         int $loopIndex = 0;
         int $filteredIndex = 0;
-        $elementJavaType $loopValue = ${ctx.defaultValue(elementType)};
+        $elementJavaType $loopValue = ${ctx.defaultValue(dataType)};
         while ($loopIndex < $dataLength) {
           $loopValue = ($elementJavaType) ($getLoopVar);
           $loopNullCheck

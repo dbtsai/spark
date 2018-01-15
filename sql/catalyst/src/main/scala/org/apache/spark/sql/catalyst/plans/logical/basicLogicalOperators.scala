@@ -131,7 +131,7 @@ case class Filter(condition: Expression, child: LogicalPlan)
   override def maxRows: Option[Long] = child.maxRows
 
   override protected def validConstraints: Set[Expression] = {
-    val predicates = splitConjunctivePredicates(condition)
+    val predicates: Seq[Expression] = splitConjunctivePredicates(condition)
       .filterNot(SubqueryExpression.hasCorrelatedSubquery)
     child.constraints.union(predicates.toSet)
   }
