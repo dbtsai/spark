@@ -399,7 +399,7 @@ case class WholeStageCodegenExec(child: SparkPlan) extends UnaryExecNode with Co
         }
 
         public void init(int index, scala.collection.Iterator[] inputs) {
-          partitionIndex = index;
+          this.partitionIndex = index;
           this.inputs = inputs;
           ${ctx.initMutableStates()}
           ${ctx.initPartition()}

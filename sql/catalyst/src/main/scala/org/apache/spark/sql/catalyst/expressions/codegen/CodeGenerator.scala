@@ -350,7 +350,7 @@ class CodegenContext {
   }
 
   def initMutableStates(): String = {
-    // It's possible that we add same mutable state twice, e.g. the `mergeExpressions` in
+    // It's possible that we add same mutable state twice, e.g. the `mergeExpressions` inBufferHolder
     // `TypedAggregateExpression`, we should call `distinct` here to remove the duplicated ones.
     val initCodes = mutableStateInitCode.distinct.map(_ + "\n")
 
