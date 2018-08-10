@@ -27,8 +27,8 @@ import org.apache.spark.sql.catalyst.expressions.{Expression, UnaryExpression}
 import org.apache.spark.sql.catalyst.expressions.codegen.{CodegenContext, CodeGenerator, ExprCode}
 import org.apache.spark.sql.types.{BinaryType, DataType}
 
-case class CatalystDataToAvro(child: Expression, jsonFormatSchema: Option[String])
-  extends UnaryExpression {
+case class CatalystDataToAvro(child: Expression, jsonFormatSchema: Option[String] = None)
+    extends UnaryExpression {
 
   override def dataType: DataType = BinaryType
 
