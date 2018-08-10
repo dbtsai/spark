@@ -39,11 +39,13 @@ package object avro {
    * Converts a column into binary of avro format.
    *
    * @param data the data column.
+   * @param jsonFormatSchema the optional avro schema in JSON string format. If it's not provided,
+   *                         it will be inferred from the catalyst schema.
    *
    * @since 2.4.0
    */
   @Experimental
-  def to_avro(data: Column): Column = {
-    new Column(CatalystDataToAvro(data.expr))
+  def to_avro(data: Column, jsonFormatSchema: Option[String] = None): Column = {
+    new Column(CatalystDataToAvro(data.expr, jsonFormatSchema))
   }
 }
