@@ -85,6 +85,7 @@ object DatasetBenchmark extends SqlBasedBenchmark {
     import spark.implicits._
 
     val df = spark.range(1, numRows).select($"id".as("l"), $"id".cast(StringType).as("s"))
+    val ds = spark.range(1, numRows).map(number => Data(number, number.toString))
     val benchmark = new Benchmark("back-to-back map", numRows, output = output)
     val func = (d: Data) => Data(d.l + 1, d.s)
 
@@ -110,7 +111,7 @@ object DatasetBenchmark extends SqlBasedBenchmark {
     }
 
     benchmark.addCase("Dataset") { iter =>
-      var res = df.as[Data]
+      var res = ds.as[Data]
       var i = 0
       while (i < numChains) {
         res = res.map(func)
@@ -169,6 +170,7 @@ object DatasetBenchmark extends SqlBasedBenchmark {
     import spark.implicits._
 
     val df = spark.range(1, numRows).select($"id".as("l"), $"id".cast(StringType).as("s"))
+    val ds = spark.range(1, numRows).map(number => Data(number, number.toString))
     val benchmark = new Benchmark("back-to-back filter", numRows, output = output)
     val func = (d: Data, i: Int) => d.l % (100L + i) == 0L
     val funcs = 0.until(numChains).map { i =>
@@ -197,7 +199,7 @@ object DatasetBenchmark extends SqlBasedBenchmark {
     }
 
     benchmark.addCase("Dataset") { iter =>
-      var res = df.as[Data]
+      var res = ds.as[Data]
       var i = 0
       while (i < numChains) {
         res = res.filter(funcs(i))
@@ -227,6 +229,7 @@ object DatasetBenchmark extends SqlBasedBenchmark {
     import spark.implicits._
 
     val df = spark.range(1, numRows).select($"id".as("l"), $"id".cast(StringType).as("s"))
+    val ds = spark.range(1, numRows).map(number => Data(number, number.toString))
     val benchmark = new Benchmark("aggregate", numRows, output = output)
 
     val rdd = spark.sparkContext.range(1, numRows).map(l => Data(l, l.toString))
@@ -239,11 +242,11 @@ object DatasetBenchmark extends SqlBasedBenchmark {
     }
 
     benchmark.addCase("Dataset sum using Aggregator") { iter =>
-      df.as[Data].select(typed.sumLong((d: Data) => d.l)).queryExecution.toRdd.foreach(_ => Unit)
+      ds.as[Data].select(typed.sumLong((d: Data) => d.l)).queryExecution.toRdd.foreach(_ => Unit)
     }
 
     benchmark.addCase("Dataset complex Aggregator") { iter =>
-      df.as[Data].select(ComplexAggregator.toColumn).queryExecution.toRdd.foreach(_ => Unit)
+      ds.as[Data].select(ComplexAggregator.toColumn).queryExecution.toRdd.foreach(_ => Unit)
     }
 
     benchmark

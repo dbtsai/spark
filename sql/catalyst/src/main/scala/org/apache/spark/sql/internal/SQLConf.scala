@@ -1697,6 +1697,14 @@ object SQLConf {
       "and java.sql.Date are used for the same purpose.")
     .booleanConf
     .createWithDefault(false)
+
+  val BYTECODE_ANALYSIS_ENABLED =
+    buildConf("spark.sql.bytecodeAnalysis.enabled")
+      .doc("Enables or disables closure bytecode analysis. When true, Spark will try to convert " +
+        "user-defined closures into Catalyst expressions in order to apply more optimizations " +
+        "on typed Datasets")
+      .booleanConf
+      .createWithDefault(false)
 }
 
 /**
@@ -2029,6 +2037,8 @@ class SQLConf extends Serializable with Logging {
   def joinReorderCardWeight: Double = getConf(SQLConf.JOIN_REORDER_CARD_WEIGHT)
 
   def joinReorderDPStarFilter: Boolean = getConf(SQLConf.JOIN_REORDER_DP_STAR_FILTER)
+
+  def bytecodeAnalysisEnabled: Boolean = getConf(SQLConf.BYTECODE_ANALYSIS_ENABLED)
 
   def windowExecBufferInMemoryThreshold: Int = getConf(WINDOW_EXEC_BUFFER_IN_MEMORY_THRESHOLD)
 

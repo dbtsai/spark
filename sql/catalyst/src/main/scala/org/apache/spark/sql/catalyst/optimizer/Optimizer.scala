@@ -21,6 +21,7 @@ import scala.collection.mutable
 
 import org.apache.spark.sql.AnalysisException
 import org.apache.spark.sql.catalyst.analysis._
+import org.apache.spark.sql.catalyst.bytecode.PlanConverter
 import org.apache.spark.sql.catalyst.catalog.{InMemoryCatalog, SessionCatalog}
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.aggregate._
@@ -125,6 +126,7 @@ abstract class Optimizer(sessionCatalog: SessionCatalog)
         SimplifyCasts,
         SimplifyCaseConversionExpressions,
         RewriteCorrelatedScalarSubquery,
+        ConvertToUntypedPlan,
         EliminateSerialization,
         RemoveRedundantAliases,
         RemoveNoopOperators,
@@ -1683,6 +1685,45 @@ object RemoveRepetitionFromGroupExpressions extends Rule[LogicalPlan] {
         a
       } else {
         a.copy(groupingExpressions = newGrouping)
+      }
+  }
+}
+
+/**
+ * A rule that converts typed operations into equivalent untyped ones.
+ */
+object ConvertToUntypedPlan extends Rule[LogicalPlan] {
+
+  override def apply(plan: LogicalPlan): LogicalPlan = {
+    if (SQLConf.get.bytecodeAnalysisEnabled) {
+      plan transformUp {
+        case MapOperation(s, m, d) if isFirstTypedOperation(d) || isLastTypedOperation(plan, s) =>
+          PlanConverter.convertMapElements(s, m, d).getOrElse(s)
+        case f: TypedFilter if isFirstTypedOperation(f) || isLastTypedOperation(plan, f) =>
+          PlanConverter.convertTypedFilter(f).getOrElse(f)
+      }
+    } else {
+      plan
+    }
+  }
+
+  // checks if a node starts a sequence of typed operations
+  private def isFirstTypedOperation(n: UnaryNode): Boolean =
+    !n.child.isInstanceOf[SerializeFromObject] && !n.child.isInstanceOf[TypedFilter]
+
+  // checks if a node ends a sequence of typed operations
+  private def isLastTypedOperation(root: LogicalPlan, plan: LogicalPlan): Boolean = {
+    val parent = root.collectFirst { case p if p.children.contains(plan) => p }
+    !parent.exists(p => p.isInstanceOf[DeserializeToObject] || p.isInstanceOf[TypedFilter])
+  }
+
+  object MapOperation {
+
+    def unapply(p: LogicalPlan): Option[(SerializeFromObject, MapElements, DeserializeToObject)] =
+      p match {
+        case s @ SerializeFromObject(_, m @ MapElements(_, _, _, _, d: DeserializeToObject)) =>
+          Some((s, m, d))
+        case _ => None
       }
   }
 }

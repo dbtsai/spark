@@ -588,6 +588,12 @@ object ScalaReflection extends ScalaReflection {
    */
   def getClassFromType(tpe: Type): Class[_] = mirror.runtimeClass(tpe.dealias.typeSymbol.asClass)
 
+  def getTypeFromClass[T](clazz: Class[T]): Type = {
+    val m = runtimeMirror(clazz.getClassLoader)
+    val classSymbol = m.classSymbol(clazz)
+    classSymbol.toType
+  }
+
   case class Schema(dataType: DataType, nullable: Boolean)
 
   /** Returns a Sequence of attributes for the given case class type. */

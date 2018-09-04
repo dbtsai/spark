@@ -34,8 +34,6 @@ import org.apache.spark.internal.Logging
  */
 private[spark] object ClosureCleaner extends Logging {
 
-  private val isScala2_11 = scala.util.Properties.versionString.contains("2.11")
-
   // Get an ASM class reader for a given class from the JAR that loaded it
   private[util] def getClassReader(cls: Class[_]): ClassReader = {
     // Copy data over, before delegating to ClassReader - else we can run out of open file handles.
@@ -163,42 +161,6 @@ private[spark] object ClosureCleaner extends Logging {
   }
 
   /**
-   * Try to get a serialized Lambda from the closure.
-   *
-   * @param closure the closure to check.
-   */
-  private def getSerializedLambda(closure: AnyRef): Option[SerializedLambda] = {
-    if (isScala2_11) {
-      return None
-    }
-    val isClosureCandidate =
-      closure.getClass.isSynthetic &&
-        closure
-          .getClass
-          .getInterfaces.exists(_.getName == "scala.Serializable")
-
-    if (isClosureCandidate) {
-      try {
-        Option(inspect(closure))
-      } catch {
-        case e: Exception =>
-          // no need to check if debug is enabled here the Spark
-          // logging api covers this.
-          logDebug("Closure is not a serialized lambda.", e)
-          None
-      }
-    } else {
-      None
-    }
-  }
-
-  private def inspect(closure: AnyRef): SerializedLambda = {
-    val writeReplace = closure.getClass.getDeclaredMethod("writeReplace")
-    writeReplace.setAccessible(true)
-    writeReplace.invoke(closure).asInstanceOf[java.lang.invoke.SerializedLambda]
-  }
-
-  /**
    * Helper method to clean the given closure in place.
    *
    * The mechanism is to traverse the hierarchy of enclosing closures and null out any
@@ -248,7 +210,7 @@ private[spark] object ClosureCleaner extends Logging {
     // most likely to be the case with 2.12, 2.13
     // so we check first
     // non LMF-closures should be less frequent from now on
-    val lambdaFunc = getSerializedLambda(func)
+    val lambdaFunc = Utils.getSerializedLambda(func)
 
     if (!isClosure(func.getClass) && lambdaFunc.isEmpty) {
       logDebug(s"Expected a closure; got ${func.getClass.getName}")
