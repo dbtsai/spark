@@ -1998,7 +1998,7 @@
                       -->
                       <exclude>org.jboss.netty</exclude>
                       <exclude>org.codehaus.groovy</exclude>
-                      <exclude>*:*_2.10</exclude>
+                      <exclude>*:*_2.11</exclude>
                     </excludes>
                     <searchTransitive>true</searchTransitive>
                   </bannedDependencies>
@@ -2693,14 +2693,14 @@
 
     <!-- Exists for backwards compatibility; profile doesn't do anything -->
     <profile>
-      <id>scala-2.11</id>
+      <id>scala-2.12</id>
     </profile>
 
     <profile>
-      <id>scala-2.12</id>
+      <id>scala-2.11</id>
       <properties>
-        <scala.version>2.12.7</scala.version>
-        <scala.binary.version>2.12</scala.binary.version>
+        <scala.version>2.11.12</scala.version>
+        <scala.binary.version>2.11</scala.binary.version>
       </properties>
       <build>
         <plugins>
@@ -2717,7 +2717,6 @@
                   <rules>
                     <bannedDependencies>
                       <excludes combine.children="append">
-                        <exclude>*:*_2.11</exclude>
                         <exclude>*:*_2.10</exclude>
                       </excludes>
                     </bannedDependencies>
