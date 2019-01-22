@@ -270,62 +270,21 @@ object DatasetBytecodeAnalysisBenchmark extends SqlBasedBenchmark {
     benchmark
   }
 
-  def returnNullEvent(): Event = null
-
-  def nullHandling(numRows: Long, explain: Boolean): Benchmark = {
-    import spark.implicits._
-
-    val benchmark = new Benchmark("null handling", numRows, 2)
-
-    val datasetTest = () => {
-      val res = spark.range(1, numRows).map(n => Event(n, null, n)).as[Event]
-        .map{ event =>
-          val e: Event = returnNullEvent()
-          val r = e.doSmth()
-          event.deviceId.concat("suffix")
-        }
-
-      if (explain) res.explain(true)
-      res.queryExecution.toRdd.foreach(_ => Unit)
-    }
-
-    // benchmark.addCase("No bytecode analysis") { _ =>
-    //   withSQLConf(SQLConf.BYTECODE_ANALYSIS_ENABLED.key -> "false") {
-    //     datasetTest()
-    //   }
-    // }
-
-    benchmark.addCase("Bytecode analysis enabled") { _ =>
-      withSQLConf(SQLConf.BYTECODE_ANALYSIS_ENABLED.key -> "true") {
-        datasetTest()
-      }
-    }
-
-    benchmark
-  }
-
   // TODO nested data types
 
   // TODO undeterministic
 
-  override def getSparkSession: SparkSession = {
-    SparkSession.builder
-      .master("local[*]")
-      .appName("Dataset bytecode analysis benchmark")
-      .getOrCreate()
-  }
-
   override def runBenchmarkSuite(mainArgs: Array[String]): Unit = {
-    val numRows = 100000000
+    val numRows = 10000000
+    val minNumIters = 5
     val explain = false
 
-    backToBackMapLong(numRows, minNumIters = 1, explain).run()
-    filterMapFilterLong(numRows, minNumIters = 1, explain).run()
-    aggregationLong(numRows, minNumIters = 1, explain).run()
-    trivialMapCaseClasses(numRows, minNumIters = 1, explain).run()
-    mapBetweenCaseClasses(numRows, minNumIters = 1, explain).run()
-    mapAndFilterCaseClasses(numRows, minNumIters = 1, explain).run()
-    nullHandling(numRows, explain).run()
+    backToBackMapLong(numRows, minNumIters, explain).run()
+    filterMapFilterLong(numRows, minNumIters, explain).run()
+    aggregationLong(numRows, minNumIters, explain).run()
+    trivialMapCaseClasses(numRows, minNumIters, explain).run()
+    mapBetweenCaseClasses(numRows, minNumIters, explain).run()
+    mapAndFilterCaseClasses(numRows, minNumIters, explain).run()
   }
 
 }

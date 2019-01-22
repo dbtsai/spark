@@ -20,12 +20,11 @@ package org.apache.spark.sql.catalyst
 import scala.collection.mutable
 import scala.util.Try
 
-import javassist.{CtBehavior, CtClass, CtField, CtMethod, Modifier}
+import javassist.{CtBehavior, CtClass, CtConstructor, CtField, CtMethod, Modifier}
 import javassist.bytecode.{CodeIterator, ConstPool}
 import javassist.bytecode.InstructionPrinter.instructionString
 
-import org.apache.spark.sql.catalyst.expressions.{Cast, Expression}
-import org.apache.spark.sql.types.{BooleanType, ByteType, DataType, DoubleType, FloatType, IntegerType, LongType, ShortType, StringType}
+import org.apache.spark.sql.catalyst.expressions.Expression
 
 package object bytecode {
 
@@ -33,7 +32,6 @@ package object bytecode {
   // and formal method parameters, so we cannot pre-compute it in advance.
   // hence, we are using an instance of mutable.HashMap[Int, Expression] instead of an array
   type LocalVarArray = mutable.HashMap[Int, Expression]
-
   type OperandStack = mutable.ArrayStack[Expression]
 
   val JAVA_BOOLEAN_CLASS = "java.lang.Boolean"
@@ -45,16 +43,46 @@ package object bytecode {
   val JAVA_DOUBLE_CLASS = "java.lang.Double"
   val JAVA_STRING_CLASS = "java.lang.String"
   val JAVA_OBJECT_CLASS = "java.lang.Object"
-
-  private val supportedSimpleTypes = Seq(
-    BooleanType, ByteType, ShortType, IntegerType, LongType, FloatType, DoubleType, StringType)
-
-  def isSupportedSimpleType(dataType: DataType): Boolean = supportedSimpleTypes.contains(dataType)
+  val SPARK_UTF8_STRING_CLASS = "org.apache.spark.unsafe.types.UTF8String"
 
   def resolvePrimitiveWrappers: PartialFunction[Expression, Expression] = {
-    // TODO: do we need to wrap this into NPEOnNull?
-    case p: PrimitiveWrapperRef => Cast(p.value.get, p.dataType)
+    // TODO: do we need cast here?
+    // TODO: what if you make PrimitiveWrapperRef a valid expression by itself?
+    // case p: PrimitiveWrapperRef => Cast(p.value.get, p.primitiveType)
+    case p: PrimitiveWrapperRef =>
+      val value = p.value.get
+      require(value.dataType == p.dataType, "resolvePrimitiveWrappers failed")
+      value
   }
+
+  def newLocalVarArray(
+      behavior: Behavior,
+      thisRef: Option[Expression],
+      args: Seq[Expression]): LocalVarArray = {
+
+    require(behavior.isStatic == thisRef.isEmpty)
+
+    val localVars = new LocalVarArray
+    var localVarIndex = 0
+
+    thisRef.foreach { ref =>
+      localVars(0) = ref
+      localVarIndex += 1
+    }
+
+    args.zip(behavior.parameterTypes).foreach {case (arg, argCtClass) =>
+      localVars(localVarIndex) = arg
+      localVarIndex += 1
+      // primitive longs and doubles occupy two slots in the local variable array
+      if (argCtClass.getName == "long" || argCtClass.getName == "double") {
+        localVars(localVarIndex) = null
+        localVarIndex += 1
+      }
+    }
+
+    localVars
+  }
+
   /**
    * This is a wrapper around [[CtBehavior]] to simplify the interaction.
    */
@@ -65,6 +93,7 @@ package object bytecode {
     lazy val opcodes: CodeIterator = ctBehavior.getMethodInfo.getCodeAttribute.iterator()
     lazy val constPool: ConstPool = ctBehavior.getMethodInfo.getConstPool
     lazy val isStatic: Boolean = Modifier.isStatic(ctBehavior.getModifiers)
+    lazy val isConstructor: Boolean = ctBehavior.isInstanceOf[CtConstructor]
     lazy val numParameters: Int = ctBehavior.getParameterTypes.length
     lazy val parameterTypes: Array[CtClass] = ctBehavior.getParameterTypes
     lazy val returnType: Option[CtClass] = ctBehavior match {
@@ -76,7 +105,7 @@ package object bytecode {
 
     def getOpcode(index: Int): Int = opcodes.byteAt(index)
 
-    // TODO return Option?
+    // TODO: return Option?
     def getNextOpcodeIndex(index: Int): Int = {
       opcodes.move(index)
       opcodes.next()
@@ -112,7 +141,7 @@ package object bytecode {
       ctClass.getField(fieldName)
     }
 
-    // TODO consider a built-in solution from javassist
+    // TODO: consider a built-in solution from javassist, if any
     def toDebugString: String = {
       val stringBuilder = new StringBuilder()
 

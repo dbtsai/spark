@@ -64,9 +64,9 @@ object ScalaReflection extends ScalaReflection {
    * Unlike `schemaFor`, this function doesn't do any massaging of types into the Spark SQL type
    * system.  As a result, ObjectType will be returned for things like boxed Integers
    */
-  def dataTypeFor[T : TypeTag]: DataType = dataTypeFor(localTypeOf[T])
+  def dataTypeFor[T: TypeTag]: DataType = dataTypeFor(localTypeOf[T])
 
-  private def dataTypeFor(tpe: `Type`): DataType = cleanUpReflectionObjects {
+  def dataTypeFor(tpe: `Type`): DataType = cleanUpReflectionObjects {
     tpe.dealias match {
       case t if t <:< definitions.NullTpe => NullType
       case t if t <:< definitions.IntTpe => IntegerType

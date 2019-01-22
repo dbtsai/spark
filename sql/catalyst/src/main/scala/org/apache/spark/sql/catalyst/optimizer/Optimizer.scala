@@ -126,6 +126,7 @@ abstract class Optimizer(sessionCatalog: SessionCatalog)
         SimplifyCasts,
         SimplifyCaseConversionExpressions,
         RewriteCorrelatedScalarSubquery,
+        // TODO: is it possible to act after EliminateSerialization?
         ConvertToUntypedPlan,
         EliminateSerialization,
         RemoveRedundantAliases,

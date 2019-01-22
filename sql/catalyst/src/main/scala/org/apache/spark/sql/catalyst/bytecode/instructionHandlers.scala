@@ -22,6 +22,8 @@ import javassist.bytecode.Opcode._
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.AnalysisException
 import org.apache.spark.sql.catalyst.ScalaReflection
+import org.apache.spark.sql.catalyst.ScalaReflection.Schema
+import org.apache.spark.sql.catalyst.bytecode
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.types._
 import org.apache.spark.util.Utils
@@ -57,8 +59,8 @@ object InstructionHandler {
 /**
  * A base trait for all instruction handlers.
  *
- * Each handler must implement the `tryToHandle` method. If a handler can process an instruction, it
- * performs actions on the local variable array and the operand stack and returns [[Some]] with
+ * Each handler must implement the `tryToHandle` method. If a handler can process an instruction,
+ * it performs actions on the local variable array and the operand stack and returns [[Some]] with
  * the result of `InstructionHandler.handle` for the next instruction. If a handler
  * cannot process an instruction, `tryToHandle` should return None.
  *
@@ -81,10 +83,9 @@ sealed trait InstructionHandler extends Logging {
     }
   }
 
-  // TODO revise this, it is ugly
   /**
    * Creates a valid local variable array for a particular behavior by offloading the needed
-   * number of expressions from the operand stack and arrangin them at correct indexes.
+   * number of expressions from the operand stack and arranging them at correct indexes.
    *
    * Note that doubles and longs consume two slots in the local var array.
    * Objects and other primitives occupy only one.
@@ -93,39 +94,13 @@ sealed trait InstructionHandler extends Logging {
    * @param operandStack the operand stack.
    * @return the created local variable array.
    */
-  def newLocalVarArray(behavior: Behavior, operandStack: OperandStack): LocalVarArray = {
-    val numLocalVars = if (behavior.isStatic) behavior.numParameters else behavior.numParameters + 1
-
-    // pop all needed local vars from the stack
-    val operandExprs = new Array[Expression](numLocalVars)
-    for (index <- numLocalVars - 1 to 0 by -1) {
-      operandExprs(index) = operandStack.pop()
+  def createLocalVarArray(behavior: Behavior, operandStack: OperandStack): LocalVarArray = {
+    val args = new Array[Expression](behavior.numParameters)
+    for (index <- behavior.numParameters - 1 to 0 by -1) {
+      args(index) = operandStack.pop()
     }
-
-    val localVars = new LocalVarArray
-    var localVarIndex = 0
-
-    val inputParams = if (behavior.isStatic) {
-      operandExprs.zip(behavior.parameterTypes)
-    } else {
-      // set "this" for instance methods
-      localVars(0) = operandExprs.head
-      localVarIndex += 1
-      operandExprs.drop(1).zip(behavior.parameterTypes)
-    }
-
-    for (inputParamIndex <- inputParams.indices) {
-      val (operandExpr, operandCtClass) = inputParams(inputParamIndex)
-      localVars(localVarIndex) = operandExpr
-      localVarIndex += 1
-      // primitive longs and doubles occupy two slots in the local variable array
-      if (operandCtClass.getName == "long" || operandCtClass.getName == "double") {
-        localVars(localVarIndex) = null
-        localVarIndex += 1
-      }
-    }
-
-    localVars
+    val thisRef = if (behavior.isStatic) None else Some(operandStack.pop())
+    newLocalVarArray(behavior, thisRef, args.toSeq)
   }
 }
 
@@ -140,7 +115,7 @@ object LocalVarInstructionHandler extends InstructionHandler {
       localVars: LocalVarArray,
       operandStack: OperandStack): Option[Result] = {
 
-    // TODO do we need to differentiate between types? Any additional type check?
+    // TODO: do we need to differentiate between types? Any additional type check?
     val opcodeIndex = instruction.opcodeIndex
     val behavior = instruction.behavior
 
@@ -183,7 +158,7 @@ object ConstantLoadInstructionHandler extends InstructionHandler {
       localVars: LocalVarArray,
       operandStack: OperandStack): Option[Result] = {
 
-    // TODO Byte, Char, Array?
+    // TODO: Byte, Char, Array?
     val behavior = instruction.behavior
     val opcodeIndex = instruction.opcodeIndex
 
@@ -210,7 +185,8 @@ object ConstantLoadInstructionHandler extends InstructionHandler {
         val constant = behavior.getConstant(constantIndex)
         operandStack.push(Literal(constant))
       case BIPUSH =>
-        val byteValue = behavior.opcodes.byteAt(opcodeIndex + 1)
+        val byteValue = behavior.opcodes.signedByteAt(opcodeIndex + 1)
+        // TODO: BIPUSH push integer or byte? According to the spec, it should be integer
         operandStack.push(Literal(byteValue, IntegerType))
       // TODO: WARNING! It is not OK to keep it NullType
       case ACONST_NULL => operandStack.push(Literal(null, NullType))
@@ -240,7 +216,7 @@ object TypeConversionInstructionHandler extends InstructionHandler {
       case I2D | L2D | F2D => operandStack.push(Cast(operandStack.pop(), DoubleType))
       case I2B => operandStack.push(Cast(operandStack.pop(), ByteType))
       case I2S => operandStack.push(Cast(operandStack.pop(), ShortType))
-      // TODO string vs char type
+      // TODO: string vs char type
       case I2C => operandStack.push(Cast(operandStack.pop(), StringType))
       case _ => return None
     }
@@ -254,6 +230,8 @@ object TypeConversionInstructionHandler extends InstructionHandler {
 /**
  * A handler that deals with basic math operations on items on the operand stack.
  */
+// TODO: nulls are handled differently in all expressions
+// TODO: divison by zero
 object MathInstructionHandler extends InstructionHandler {
 
   protected def tryToHandle(
@@ -262,26 +240,77 @@ object MathInstructionHandler extends InstructionHandler {
       operandStack: OperandStack): Option[Result] = {
 
     instruction.opcode match {
-      case IADD | LADD | FADD | DADD =>
-        val (rightOperand, leftOperand) = (operandStack.pop(), operandStack.pop())
-        operandStack.push(Add(leftOperand, rightOperand))
-      case ISUB | LSUB | FSUB | DSUB =>
-        val (rightOperand, leftOperand) = (operandStack.pop(), operandStack.pop())
-        operandStack.push(Subtract(leftOperand, rightOperand))
-      case IMUL | LMUL | FMUL | DMUL =>
-        val (rightOperand, leftOperand) = (operandStack.pop(), operandStack.pop())
-        operandStack.push(Multiply(leftOperand, rightOperand))
-      case IDIV | LDIV | FDIV | DDIV =>
-        val (rightOperand, leftOperand) = (operandStack.pop(), operandStack.pop())
-        operandStack.push(Divide(leftOperand, rightOperand))
-      case IREM | LREM | FREM | DREM =>
-        val (rightOperand, leftOperand) = (operandStack.pop(), operandStack.pop())
-        operandStack.push(Remainder(leftOperand, rightOperand))
+      case IADD =>
+        compute(Add, IntegerType, operandStack)
+      case LADD =>
+        compute(Add, LongType, operandStack)
+      case FADD =>
+        compute(Add, FloatType, operandStack)
+      case DADD =>
+        compute(Add, DoubleType, operandStack)
+      case ISUB =>
+        compute(Subtract, IntegerType, operandStack)
+      case LSUB =>
+        compute(Subtract, LongType, operandStack)
+      case FSUB =>
+        compute(Subtract, FloatType, operandStack)
+      case DSUB =>
+        compute(Subtract, DoubleType, operandStack)
+      case IMUL =>
+        compute(Multiply, IntegerType, operandStack)
+      case LMUL =>
+        compute(Multiply, LongType, operandStack)
+      case FMUL =>
+        compute(Multiply, FloatType, operandStack)
+      case DMUL =>
+        compute(Multiply, DoubleType, operandStack)
+      case IDIV =>
+        compute((left, right) => IntegralDivide(left, right), IntegerType, operandStack)
+      case LDIV =>
+        compute((left, right) => IntegralDivide(left, right), LongType, operandStack)
+      case FDIV =>
+        // fetch as doubles because Divide can process only doubles and decimals
+        compute((left, right) => Cast(Divide(left, right), FloatType), DoubleType, operandStack)
+      case DDIV =>
+        compute(Divide, DoubleType, operandStack)
+      case IREM =>
+        compute(Remainder, IntegerType, operandStack)
+      case LREM =>
+        compute(Remainder, LongType, operandStack)
+      case FREM =>
+        compute(Remainder, FloatType, operandStack)
+      case DREM =>
+        compute(Remainder, DoubleType, operandStack)
       case _ => return None
     }
 
     val nextInstruction = instruction.next()
     Some(InstructionHandler.handle(nextInstruction, localVars, operandStack))
+  }
+
+  private def compute(
+      func: (Expression, Expression) => Expression,
+      dataType: AtomicType,
+      operandStack: OperandStack): Unit = {
+
+    val rightOperand = getOperand(dataType, operandStack)
+    val leftOperand = getOperand(dataType, operandStack)
+    operandStack.push(func(leftOperand, rightOperand))
+  }
+
+  // when we have "1.toByte + 1", we need to promote the byte value to Int (just as Java/Scala do)
+  // otherwise, the result expression will be unresolved
+  private def getOperand(targetType: AtomicType, operandStack: OperandStack): Expression = {
+    val operand = operandStack.pop()
+    operand.dataType match {
+      case operandType: AtomicType if operandType != targetType =>
+        require(Cast.canSafeCast(operandType, targetType))
+        Cast(operand, targetType)
+      case operandType: AtomicType if operandType == targetType =>
+        operand
+      case _ =>
+        throw new RuntimeException(s"$operand cannot be safely cast to $targetType")
+    }
   }
 }
 
@@ -333,33 +362,6 @@ object ComparisonInstructionHandler extends InstructionHandler {
  */
 object InvokeInstructionHandler extends InstructionHandler {
 
-  // TODO this is very limited for now
-  // TODO extend once agree on a proper way to handle this
-  private val staticMethodHandler: PartialFunction[Behavior, LocalVarArray => Expression] = {
-    case b if b.declaringClass.getName == JAVA_LONG_CLASS && b.name == "valueOf" =>
-      localVars => Cast(localVars(0), LongType)
-    case b if b.declaringClass.getName == JAVA_LONG_CLASS && b.name == "toString" =>
-      localVars => Cast(localVars(0), StringType)
-  }
-
-  private val instanceMethodHandler: PartialFunction[Behavior, LocalVarArray => Expression] = {
-    case b if b.declaringClass.getName == JAVA_STRING_CLASS && b.name == "concat" =>
-      localVars => Concat(Seq(NPEonNull(localVars(0)), NPEonNull(localVars(1))))
-    case b if b.declaringClass.getName == JAVA_OBJECT_CLASS && b.name == "toString" =>
-      localVars => Cast(NPEonNull(localVars(0)), StringType)
-  }
-
-  private def isSpecialBehavior(behavior: Behavior, localVars: LocalVarArray): Boolean = {
-    if (behavior.isStatic) {
-      staticMethodHandler.isDefinedAt(behavior)
-    } else {
-      val dataType = localVars(0).dataType
-      isSupportedSimpleType(dataType) && instanceMethodHandler.isDefinedAt(behavior)
-    }
-  }
-
-  private val specialBehaviorHandler = staticMethodHandler orElse instanceMethodHandler
-
   protected def tryToHandle(
       instruction: Instruction,
       localVars: LocalVarArray,
@@ -371,7 +373,7 @@ object InvokeInstructionHandler extends InstructionHandler {
     instruction.opcode match {
       case INVOKEVIRTUAL | INVOKESPECIAL | INVOKESTATIC =>
         val targetBehavior = behavior.getBehaviorAt(opcodeIndex + 1)
-        val targetLocalVars = newLocalVarArray(targetBehavior, operandStack)
+        val targetLocalVars = createLocalVarArray(targetBehavior, operandStack)
 
         // ensure we do not call an instance method on a null reference
         if (!targetBehavior.isStatic && isNullLiteral(targetLocalVars(0))) {
@@ -379,9 +381,9 @@ object InvokeInstructionHandler extends InstructionHandler {
         }
 
         // intercept special cases such as calls on primitive wrappers
-        if (isSpecialBehavior(targetBehavior, targetLocalVars)) {
-          val resultExpr = specialBehaviorHandler(targetBehavior)(targetLocalVars)
-          operandStack.push(resultExpr)
+        if (SpecialBehaviorHandler.canHandle(targetBehavior, targetLocalVars)) {
+          val resultExpr = SpecialBehaviorHandler.handle(targetBehavior, targetLocalVars)
+          resultExpr.foreach(expr => operandStack.push(expr))
           val nextInstruction = instruction.next()
           return Some(InstructionHandler.handle(nextInstruction, localVars, operandStack))
         }
@@ -392,14 +394,7 @@ object InvokeInstructionHandler extends InstructionHandler {
         targetBehaviorResult match {
           case Success(returnValue) =>
             returnValue.foreach { value =>
-              // TODO how will it behave with nested data types?
-              if (targetBehavior.isStatic || !targetLocalVars(0).nullable) {
-                operandStack.push(value)
-              } else {
-                val thisRef = targetLocalVars(0)
-                val expr = If(IsNull(thisRef), NPEonNull(Literal(null, value.dataType)), value)
-                operandStack.push(expr)
-              }
+              operandStack.push(value)
             }
             val nextInstruction = instruction.next()
             Some(InstructionHandler.handle(nextInstruction, localVars, operandStack))
@@ -432,7 +427,7 @@ object StaticFieldInstructionHandler extends InstructionHandler {
     instruction.opcode match {
       case GETSTATIC =>
         val field = behavior.getFieldAt(opcodeIndex + 1)
-        // TODO Java statics
+        // TODO: Java statics
         // right now, only Scala objects are supported
         if (field.getName == "MODULE$") {
           val className = field.getDeclaringClass.getName
@@ -469,12 +464,12 @@ object ObjectFieldInstructionHandler extends InstructionHandler {
         val operand = operandStack.pop()
         val targetFieldName = targetField.getName
         operand match {
-          case structRef: StructRef =>
-            // TODO [NULL HANDLING]
-            val fieldExpr = structRef.getField(targetFieldName).orNull
+          case o: ObjectRef =>
+            // TODO: [NULL HANDLING]
+            val fieldExpr = o.getField(targetFieldName).orNull
             operandStack.push(fieldExpr)
-          case e: Expression if isSupportedSimpleType(e.dataType) && targetFieldName == "value" =>
-            operandStack.push(operand)
+          case e: PrimitiveWrapperRef if targetFieldName == "value" =>
+            operandStack.push(e.value.orNull)
           case e: Expression if e.dataType.isInstanceOf[StructType] =>
             val structType = e.dataType.asInstanceOf[StructType]
             val fieldIndex = structType.fieldIndex(targetFieldName)
@@ -487,9 +482,10 @@ object ObjectFieldInstructionHandler extends InstructionHandler {
         val targetFieldName = behavior.constPool.getFieldrefName(fieldIndex)
         val (fieldValue, expression) = (operandStack.pop(), operandStack.pop())
         expression match {
-          case structRef: StructRef =>
-            structRef.setField(targetFieldName, fieldValue)
-          case wrapperRef: PrimitiveWrapperRef =>
+          case o: ObjectRef =>
+            o.setField(targetFieldName, fieldValue)
+          // TODO: proper validation
+          case wrapperRef: PrimitiveWrapperRef if targetFieldName == "value" =>
             wrapperRef.value = Some(fieldValue)
           case _ =>
             return Some(Failure(s"Cannot set $targetFieldName in $expression"))
@@ -505,6 +501,7 @@ object ObjectFieldInstructionHandler extends InstructionHandler {
 /**
  * A handler for if statements.
  */
+// TODO: support for if statements has to be revisited.
 object IfStatementInstructionHandler extends InstructionHandler {
 
   protected def tryToHandle(
@@ -617,14 +614,8 @@ object NewInstructionHandler extends InstructionHandler {
           return Some(InstructionHandler.handle(nextInstruction, localVars, operandStack))
         }
 
-        val tpe = ScalaReflection.getTypeFromClass(Utils.classForName(className))
-        // TODO: Scala tuples?
-        val schema = ScalaReflection.schemaFor(tpe)
-        schema.dataType match {
-          case st: StructType =>
-            operandStack.push(StructRef(st))
-          case _ => throw new RuntimeException("Not supported now")
-        }
+        val clazz = Utils.classForName(className)
+        operandStack.push(ObjectRef(clazz))
       case _ =>
         return None
     }
@@ -652,7 +643,7 @@ object MiscInstructionHandler extends InstructionHandler {
         operandStack.push(operandStack.top)
       case DUP2 =>
         operandStack.top match {
-          case w: PrimitiveWrapperRef if w.dataType == LongType || w.dataType == DoubleType =>
+          case e if !isWrapperRef(e) && (e.dataType == LongType || e.dataType == DoubleType) =>
             operandStack.push(operandStack.top)
           case _ =>
             val (topOperand, nextOperand) = (operandStack.pop(), operandStack.pop())
@@ -665,7 +656,7 @@ object MiscInstructionHandler extends InstructionHandler {
         operandStack.pop()
       case POP2 =>
         operandStack.top match {
-          case w: PrimitiveWrapperRef if w.dataType == LongType || w.dataType == DoubleType =>
+          case e if !isWrapperRef(e) && (e.dataType == LongType || e.dataType == DoubleType) =>
             operandStack.pop()
           case _ =>
             operandStack.pop()
@@ -680,14 +671,18 @@ object MiscInstructionHandler extends InstructionHandler {
         val classIndex = behavior.opcodes.u16bitAt(opcodeIndex + 1)
         val className = behavior.constPool.getClassInfo(classIndex)
         val tpe = ScalaReflection.getTypeFromClass(Utils.classForName(className))
-        val schema = ScalaReflection.schemaFor(tpe)
-        require(operandStack.top.dataType == schema.dataType)
+        // TODO: schemaFor vs dataTypeFor
+        // val dataType = ScalaReflection.dataTypeFor(tpe)
+        val Schema(dataType, _) = ScalaReflection.schemaFor(tpe)
+        require(operandStack.top.dataType == dataType)
       case _ => return None
     }
 
     val nextInstruction = instruction.next()
     Some(InstructionHandler.handle(nextInstruction, localVars, operandStack))
   }
+
+  private def isWrapperRef(e: Expression): Boolean = e.isInstanceOf[PrimitiveWrapperRef]
 }
 
 /**
@@ -706,14 +701,58 @@ object ReturnInstructionHandler extends InstructionHandler {
     instruction.opcode match {
       case IRETURN if behavior.returnType.exists(_.getName == "boolean") =>
         // in bytecode, boolean operations are represented as ints, so we need an explicit cast
-        val expr = operandStack.top.transformUp(resolvePrimitiveWrappers)
-        Some(Success(returnValue = Some(Cast(expr, BooleanType))))
+        Some(Success(returnValue = Some(Cast(operandStack.pop, BooleanType))))
       case ARETURN | IRETURN | LRETURN | FRETURN | DRETURN =>
-        val expr = operandStack.top.transformUp(resolvePrimitiveWrappers)
-        Some(Success(returnValue = Some(expr)))
+        Some(Success(returnValue = Some(operandStack.pop)))
       case RETURN =>
         Some(Success(returnValue = None))
       case _ => None
     }
+  }
+}
+
+// TODO: this is just a mock for now, we need a proper design
+object SpecialBehaviorHandler {
+
+  type SpecialHandler = PartialFunction[Behavior, LocalVarArray => Option[Expression]]
+
+  // TODO: overloaded methods
+  private val staticHandler: SpecialHandler = {
+    case b if b.declaringClass.getName == JAVA_LONG_CLASS && b.name == "valueOf" &&
+      (b.parameterTypes sameElements Array(CtClassPool.getCtClass("long"))) =>
+
+      localVars => Some(bytecode.PrimitiveWrapperRef(Some(localVars(0)), LongType))
+    case b if b.declaringClass.getName == JAVA_LONG_CLASS && b.name == "valueOf" =>
+      localVars => Some(Cast(localVars(0), LongType))
+    case b if b.declaringClass.getName == JAVA_LONG_CLASS && b.name == "toString" =>
+      localVars => Some(Cast(localVars(0), StringType))
+  }
+
+  private val instanceHandler: PartialFunction[Behavior, LocalVarArray => Option[Expression]] = {
+    case b if b.declaringClass.getName == JAVA_STRING_CLASS && b.name == "concat" =>
+      localVars => Some(Concat(Seq(NPEonNull(localVars(0)), NPEonNull(localVars(1)))))
+    case b if b.declaringClass.getName == JAVA_OBJECT_CLASS && b.name == "toString" =>
+      localVars => Some(Cast(NPEonNull(localVars(0)), StringType))
+    case b if b.declaringClass.getName == SPARK_UTF8_STRING_CLASS && b.name == "toString" =>
+      localVars => Some(localVars(0))
+  }
+
+  private val handler = staticHandler orElse instanceHandler
+
+  def canHandle(behavior: Behavior, localVars: LocalVarArray): Boolean = {
+    if (behavior.isStatic) {
+      staticHandler.isDefinedAt(behavior)
+    } else {
+      localVars(0) match {
+        case e if e.isInstanceOf[PrimitiveWrapperRef] || e.dataType == StringType =>
+          instanceHandler.isDefinedAt(behavior)
+        case _ =>
+          false
+      }
+    }
+  }
+
+  def handle(behavior: Behavior, localVars: LocalVarArray): Option[Expression] = {
+    handler(behavior)(localVars)
   }
 }

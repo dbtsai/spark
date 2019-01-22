@@ -21,7 +21,7 @@ import javassist.{ClassClassPath, ClassPool, CtClass}
 import javassist.bytecode.Descriptor
 
 import org.apache.spark.sql.catalyst.ScalaReflection
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression}
+import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.types.DataType
 
 /**
@@ -86,21 +86,15 @@ object CtClassPool {
 /**
  * A class that holds closure metadata.
  *
- * @param inClass the input Java class.
- * @param inAttrs the input Catalyst attributes.
+ * @param inClasses the input Java classes.
  * @param outClass the output Java class.
- * @param outAttrs the output Catalyst attributes.
  */
-case class ClosureMetadata(
-    inClass: Class[_],
-    inAttrs: Seq[Attribute],
-    outClass: Class[_],
-    outAttrs: Seq[Attribute]) {
+case class ClosureMetadata(inClasses: Seq[Class[_]], outClass: Class[_]) {
 
-  lazy val inCtClass: CtClass = CtClassPool.getCtClass(inClass)
+  lazy val inCtClasses: Seq[CtClass] = inClasses.map(CtClassPool.getCtClass)
   lazy val outCtClass: CtClass = CtClassPool.getCtClass(outClass)
-  lazy val methodDescriptor: String = Descriptor.ofMethod(outCtClass, Array(inCtClass))
-  lazy val inType: DataType = getSparkType(inClass)
+  lazy val methodDescriptor: String = Descriptor.ofMethod(outCtClass, inCtClasses.toArray)
+  lazy val inTypes: Seq[DataType] = inClasses.map(getSparkType)
   lazy val outType: DataType = getSparkType(outClass)
 
   // TODO do we need to propagate the nullability info?

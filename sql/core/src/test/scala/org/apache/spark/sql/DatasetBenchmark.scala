@@ -22,6 +22,7 @@ import org.apache.spark.sql.execution.benchmark.SqlBasedBenchmark
 import org.apache.spark.sql.expressions.Aggregator
 import org.apache.spark.sql.expressions.scalalang.typed
 import org.apache.spark.sql.functions._
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.StringType
 
 /**
@@ -263,11 +264,14 @@ object DatasetBenchmark extends SqlBasedBenchmark {
     val numRows = 100000000
     val numChains = 10
     runBenchmark("Dataset Benchmark") {
-      backToBackMapLong(spark, numRows, numChains).run()
-      backToBackMap(spark, numRows, numChains).run()
-      backToBackFilterLong(spark, numRows, numChains).run()
-      backToBackFilter(spark, numRows, numChains).run()
-      aggregate(spark, numRows).run()
+      withSQLConf(SQLConf.BYTECODE_ANALYSIS_ENABLED.key -> "true") {
+        backToBackMapLong(spark, numRows, numChains).run()
+        backToBackMap(spark, numRows, numChains).run()
+        backToBackFilterLong(spark, numRows, numChains).run()
+        // TODO: this is broken now
+        backToBackFilter(spark, numRows, numChains).run()
+        aggregate(spark, numRows).run()
+      }
     }
   }
 }

@@ -19,12 +19,13 @@ package org.apache.spark.sql.catalyst.bytecode
 
 import scala.collection.mutable
 
-import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.catalyst.{InternalRow, ScalaReflection}
 import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, Cast, CreateNamedStructUnsafe, Expression, LeafExpression, Literal, NonSQLExpression, UnaryExpression, Unevaluable}
 import org.apache.spark.sql.catalyst.expressions.codegen.{CodegenContext, CodeGenerator, ExprCode, FalseLiteral}
 import org.apache.spark.sql.catalyst.expressions.codegen.Block._
 import org.apache.spark.sql.types.{DataType, ObjectType, StructType}
 
+// TODO: this is not enough to handle all cases
 /**
  * An expression that wraps another expression and throws a [[NullPointerException]] if the
  * child expression evaluates to null.
@@ -60,31 +61,34 @@ case class NPEonNull(child: Expression) extends UnaryExpression with NonSQLExpre
       """
     ev.copy(code = exprCode, isNull = FalseLiteral)
   }
-
 }
 
 /**
- * An expression that represents a reference to a struct.
+ * An expression that represents a reference to an object.
  *
  * We need this since the initialization of an object on the bytecode level starts with pushing
  * an object ref to the operand stack. At that point, no fields are set.
  *
- * @param dataType the data type of this object ref.
- * @param nullable indicates if the struct is nullable.
+ * @param clazz the class of this object ref.
+ * @param nullable indicates if the object ref is nullable.
  */
-private[bytecode] case class StructRef(
-    dataType: StructType,
+private[bytecode] case class ObjectRef(
+    clazz: Class[_],
     nullable: Boolean = false) extends LeafExpression with Unevaluable {
 
   private val fieldValueMap = new mutable.HashMap[String, Option[Expression]]()
 
-  for (field <- dataType.fields) {
+  for (field <- getCatalystSchema(clazz).fields) {
     fieldValueMap(field.name) = None
   }
 
-  // TODO is it actually nullable? When I create it, it is guaranteed to be non-nullable
-  // TODO what about nested data types then?
-  // Fields might be nullable, through
+  // We need to keep dataType as ObjectType in order not to break deserializer expressions
+  // For example, branches of `if` expressions must have the same type
+  override def dataType: DataType = ObjectType(clazz)
+
+  // TODO: is it actually nullable? When I create it, it is guaranteed to be non-nullable
+  // TODO: what about nested data types then?
+  // Fields might be nullable, though
   // def nullable: Boolean = fieldValueMap.keys.exists(_.nullable)
   // def nullable: Boolean = false
 
@@ -106,12 +110,12 @@ private[bytecode] case class StructRef(
   def assignFieldsToAttrs(attrs: Seq[Attribute]): Seq[Alias] = {
     attrs.map { attr =>
       resolvedFieldValuedMap(attr.name) match {
-        case Some(nestedStructRef: StructRef) =>
-          // TODO do you need a cast here?
-          Alias(nestedStructRef.toStruct, attr.name)(exprId = attr.exprId)
+        case Some(nestedObj: ObjectRef) =>
+          // TODO: do you need a cast here?
+          Alias(nestedObj.toStruct, attr.name)(exprId = attr.exprId)
         case Some(valueExpr) =>
           Alias(Cast(valueExpr, attr.dataType), attr.name)(exprId = attr.exprId)
-          // TODO what if not set?
+        // TODO: what if not set?
         case None =>
           throw new RuntimeException("Not expected")
       }
@@ -119,9 +123,26 @@ private[bytecode] case class StructRef(
   }
 
   private def resolvedFieldValuedMap =
-    fieldValueMap.mapValues { value => value.map { _.transformUp(resolvePrimitiveWrappers) }}
+    fieldValueMap.mapValues { value =>
+      value.map { _.transformUp(resolvePrimitiveWrappers) }
+    }
+
+  private def getCatalystSchema(clazz: Class[_]): StructType = {
+    val tpe = ScalaReflection.getTypeFromClass(clazz)
+    // TODO: non-struct types, Tuple?
+    val schema = ScalaReflection.schemaFor(tpe)
+    schema.dataType match {
+      case st: StructType =>
+        st
+      case _ =>
+        throw new RuntimeException("Only structs are expected for now")
+    }
+  }
 }
 
+// TODO: can we just use nullable vs non-nullable to differentiate between wrappers and primitives
+// Seems impossible as we need to handle creating of objects and calling their constructors
+// TODO: can this be unified with ObjectRef?
 /**
  * An expression that represents a reference to a Java primitive wrapper
  * such as [[java.lang.Integer]] or [[java.lang.Long]].
@@ -132,6 +153,8 @@ private[bytecode] case class StructRef(
  * @param dataType the data type of this expression.
  * @param nullable indicates if the expression is nullable.
  */
+// TODO: consider validation ScalaReflection$isNativeType
+// TODO: consider making this as a valid expression that can be evaluated
 private[bytecode] case class PrimitiveWrapperRef(
     var value: Option[Expression] = None,
     dataType: DataType,
