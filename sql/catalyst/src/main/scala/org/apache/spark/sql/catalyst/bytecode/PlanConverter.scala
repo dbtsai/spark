@@ -131,7 +131,7 @@ object PlanConverter extends Logging {
   private def getMethod(closure: AnyRef, metadata: ClosureMetadata): Behavior = closure match {
     case _: MapFunction[_, _] =>
       throw new RuntimeException("Java closures are not supported now")
-    case _ if Utils.scalaMajorVersion == "2.11" =>
+    case _ if Utils.isScala2_11 =>
       // Scala 2.11 compiler creates an anonymous class for every closure
       val closureClass = closure.getClass
       CtClassPool.addClassPathFor(closureClass)

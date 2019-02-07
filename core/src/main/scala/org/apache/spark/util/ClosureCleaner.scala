@@ -18,7 +18,6 @@
 package org.apache.spark.util
 
 import java.io.{ByteArrayInputStream, ByteArrayOutputStream}
-import java.lang.invoke.SerializedLambda
 
 import scala.collection.mutable.{Map, Set, Stack}
 import scala.language.existentials
@@ -28,6 +27,7 @@ import org.apache.xbean.asm7.Opcodes._
 
 import org.apache.spark.{SparkEnv, SparkException}
 import org.apache.spark.internal.Logging
+import org.apache.spark.util.Utils.getSerializedLambda
 
 /**
  * A cleaner that renders closures serializable if they can be done so safely.
@@ -210,7 +210,7 @@ private[spark] object ClosureCleaner extends Logging {
     // most likely to be the case with 2.12, 2.13
     // so we check first
     // non LMF-closures should be less frequent from now on
-    val lambdaFunc = Utils.getSerializedLambda(func)
+    val lambdaFunc = getSerializedLambda(func)
 
     if (!isClosure(func.getClass) && lambdaFunc.isEmpty) {
       logDebug(s"Expected a closure; got ${func.getClass.getName}")

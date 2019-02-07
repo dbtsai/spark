@@ -32,7 +32,9 @@ import scala.tools.nsc.interpreter.{AbstractOrMissingHandler, ILoop, IMain, JPri
 import scala.tools.nsc.interpreter.{NamedParam, SimpleReader, SplashLoop, SplashReader}
 import scala.tools.nsc.interpreter.StdReplTags.tagOfIMain
 import scala.tools.nsc.util.stringFromStream
-import scala.util.Properties.{javaVersion, javaVmName, versionNumberString, versionString}
+import scala.util.Properties.{javaVersion, javaVmName, versionString}
+
+import org.apache.spark.util.Utils.isScala2_11
 
 /**
  *  A Spark-specific interactive shell.
@@ -65,8 +67,6 @@ class SparkILoop(in0: Option[BufferedReader], out: JPrintWriter)
       super.createInterpreter()
     }
   }
-
-  private val isScala2_11 = versionNumberString.startsWith("2.11")
 
   val initializationCommands: Seq[String] = Seq(
     """

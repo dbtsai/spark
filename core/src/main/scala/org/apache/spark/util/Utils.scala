@@ -2852,12 +2852,7 @@ private[spark] object Utils extends Logging {
     uri.startsWith(s"$LOCAL_SCHEME:")
   }
 
-  def scalaMajorVersion: String = {
-    scala.util.Properties.versionNumberString
-      .split("\\.")
-      .take(2)
-      .mkString(".")
-  }
+  val isScala2_11 = scala.util.Properties.versionString.startsWith("2.11")
 
   /**
    * Try to get a serialized Lambda from the closure.
@@ -2865,7 +2860,13 @@ private[spark] object Utils extends Logging {
    * @param closure the closure to check.
    */
   def getSerializedLambda(closure: AnyRef): Option[SerializedLambda] = {
-    if (scalaMajorVersion == "2.11") {
+    def getLambda(closure: AnyRef): SerializedLambda = {
+      val writeReplace = closure.getClass.getDeclaredMethod("writeReplace")
+      writeReplace.setAccessible(true)
+      writeReplace.invoke(closure).asInstanceOf[java.lang.invoke.SerializedLambda]
+    }
+
+    if (isScala2_11) {
       return None
     }
 
@@ -2881,12 +2882,6 @@ private[spark] object Utils extends Logging {
     } else {
       None
     }
-  }
-
-  private def getLambda(closure: AnyRef): SerializedLambda = {
-    val writeReplace = closure.getClass.getDeclaredMethod("writeReplace")
-    writeReplace.setAccessible(true)
-    writeReplace.invoke(closure).asInstanceOf[java.lang.invoke.SerializedLambda]
   }
 }
 
