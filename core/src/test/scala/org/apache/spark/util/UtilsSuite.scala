@@ -430,7 +430,7 @@ class UtilsSuite extends SparkFunSuite with ResetSystemProperties with Logging {
   }
 
   test("deserialize long value") {
-    val testval: Long = 9730889947L
+    val testval : Long = 9730889947L
     val bbuf = ByteBuffer.allocate(8)
     assert(bbuf.hasArray)
     bbuf.order(ByteOrder.BIG_ENDIAN)
@@ -1195,9 +1195,7 @@ class UtilsSuite extends SparkFunSuite with ResetSystemProperties with Logging {
     e = new Error("Block2")
     isErrorOccurred = false
     try {
-      Utils.tryWithSafeFinallyAndFailureCallbacks {
-        throw e
-      }(catchBlock = {}, finallyBlock = {})
+      Utils.tryWithSafeFinallyAndFailureCallbacks { throw e }(catchBlock = {}, finallyBlock = {})
     } catch {
       case t: Error =>
         assert(t.getSuppressed.length == 0)
