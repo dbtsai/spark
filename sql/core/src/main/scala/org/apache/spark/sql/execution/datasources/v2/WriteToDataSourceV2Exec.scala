@@ -33,7 +33,7 @@ import org.apache.spark.sql.catalyst.analysis.{CannotReplaceMissingTableExceptio
 import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 import org.apache.spark.sql.execution.{SparkPlan, UnaryExecNode}
-import org.apache.spark.sql.sources.{AlwaysTrue, Filter}
+import org.apache.spark.sql.sources.v2.{AlwaysTrue, FilterV2}
 import org.apache.spark.sql.sources.v2.{StagedTable, SupportsWrite}
 import org.apache.spark.sql.sources.v2.writer.{BatchWrite, DataWriterFactory, SupportsDynamicOverwrite, SupportsOverwrite, SupportsTruncate, WriteBuilder, WriterCommitMessage}
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
@@ -259,11 +259,11 @@ case class AppendDataExec(
  */
 case class OverwriteByExpressionExec(
     table: SupportsWrite,
-    deleteWhere: Array[Filter],
+    deleteWhere: Array[FilterV2],
     writeOptions: CaseInsensitiveStringMap,
     query: SparkPlan) extends V2TableWriteExec with BatchWriteHelper {
 
-  private def isTruncate(filters: Array[Filter]): Boolean = {
+  private def isTruncate(filters: Array[FilterV2]): Boolean = {
     filters.length == 1 && filters(0).isInstanceOf[AlwaysTrue]
   }
 

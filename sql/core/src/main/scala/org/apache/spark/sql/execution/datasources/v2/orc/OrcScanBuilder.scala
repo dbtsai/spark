@@ -25,7 +25,7 @@ import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.execution.datasources.PartitioningAwareFileIndex
 import org.apache.spark.sql.execution.datasources.orc.OrcFilters
 import org.apache.spark.sql.execution.datasources.v2.FileScanBuilder
-import org.apache.spark.sql.sources.Filter
+import org.apache.spark.sql.sources.v2.FilterV2
 import org.apache.spark.sql.sources.v2.reader.{Scan, SupportsPushDownFilters}
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
@@ -48,9 +48,10 @@ case class OrcScanBuilder(
       readDataSchema(), readPartitionSchema(), options, pushedFilters())
   }
 
-  private var _pushedFilters: Array[Filter] = Array.empty
+  private var _pushedFilters: Array[FilterV2] = Array.empty
 
-  override def pushFilters(filters: Array[Filter]): Array[Filter] = {
+  override def pushFilters(filters: Array[FilterV2]): Array[FilterV2] = {
+    /*
     if (sparkSession.sessionState.conf.orcFilterPushDown) {
       OrcFilters.createFilter(schema, filters).foreach { f =>
         // The pushed filters will be set in `hadoopConf`. After that, we can simply use the
@@ -60,8 +61,9 @@ case class OrcScanBuilder(
       val dataTypeMap = schema.map(f => f.name -> f.dataType).toMap
       _pushedFilters = OrcFilters.convertibleFilters(schema, dataTypeMap, filters).toArray
     }
+    */
     filters
   }
 
-  override def pushedFilters(): Array[Filter] = _pushedFilters
+  override def pushedFilters(): Array[FilterV2] = _pushedFilters
 }

@@ -58,7 +58,7 @@ class OrcFilterSuite extends OrcTest with SharedSQLContext {
         DataSourceV2Relation(orcTable: OrcTable, _, options)) =>
         assert(filters.nonEmpty, "No filter is analyzed from the given query")
         val scanBuilder = orcTable.newScanBuilder(options)
-        scanBuilder.pushFilters(filters.flatMap(DataSourceStrategy.translateFilter).toArray)
+        // scanBuilder.pushFilters(filters.flatMap(DataSourceStrategy.translateFilter).toArray)
         val pushedFilters = scanBuilder.pushedFilters()
         assert(pushedFilters.nonEmpty, "No filter is pushed down")
         val maybeFilter = OrcFilters.createFilter(query.schema, pushedFilters)

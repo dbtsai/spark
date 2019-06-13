@@ -28,7 +28,7 @@ import org.apache.spark.sql.catalog.v2.expressions.{IdentityTransform, Transform
 import org.apache.spark.sql.catalog.v2.utils.CatalogV2Util
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.analysis.{CannotReplaceMissingTableException, NoSuchTableException, TableAlreadyExistsException}
-import org.apache.spark.sql.sources.{And, EqualTo, Filter}
+import org.apache.spark.sql.sources.v2.{And, EqualTo, FilterV2}
 import org.apache.spark.sql.sources.v2.reader.{Batch, InputPartition, PartitionReader, PartitionReaderFactory, Scan, ScanBuilder}
 import org.apache.spark.sql.sources.v2.writer.{BatchWrite, DataWriter, DataWriterFactory, SupportsDynamicOverwrite, SupportsOverwrite, SupportsTruncate, WriteBuilder, WriterCommitMessage}
 import org.apache.spark.sql.types.StructType
@@ -180,7 +180,7 @@ class InMemoryTable(
         this
       }
 
-      override def overwrite(filters: Array[Filter]): WriteBuilder = {
+      override def overwrite(filters: Array[FilterV2]): WriteBuilder = {
         assert(writer == Append)
         writer = new Overwrite(filters)
         this
@@ -219,7 +219,7 @@ class InMemoryTable(
     }
   }
 
-  private class Overwrite(filters: Array[Filter]) extends TestBatchWrite {
+  private class Overwrite(filters: Array[FilterV2]) extends TestBatchWrite {
     override def commit(messages: Array[WriterCommitMessage]): Unit = dataMap.synchronized {
       val deleteKeys = dataMap.keys.filter { partValues =>
         filters.flatMap(splitAnd).forall {
@@ -238,7 +238,7 @@ class InMemoryTable(
       withData(messages.map(_.asInstanceOf[BufferedRows]))
     }
 
-    private def splitAnd(filter: Filter): Seq[Filter] = {
+    private def splitAnd(filter: FilterV2): Seq[FilterV2] = {
       filter match {
         case And(left, right) => splitAnd(left) ++ splitAnd(right)
         case _ => filter :: Nil

@@ -1489,7 +1489,7 @@ class ParquetV2FilterSuite extends ParquetFilterSuite {
           assert(filters.nonEmpty, "No filter is analyzed from the given query")
           val scanBuilder = parquetTable.newScanBuilder(options)
           val sourceFilters = filters.flatMap(DataSourceStrategy.translateFilter).toArray
-          scanBuilder.pushFilters(sourceFilters)
+          // scanBuilder.pushFilters(sourceFilters)
           val pushedFilters = scanBuilder.pushedFilters()
           assert(pushedFilters.nonEmpty, "No filter is pushed down")
           val schema = new SparkToParquetSchemaConverter(conf).convert(df.schema)
@@ -1497,7 +1497,7 @@ class ParquetV2FilterSuite extends ParquetFilterSuite {
           // In this test suite, all the simple predicates are convertible here.
           assert(parquetFilters.convertibleFilters(sourceFilters) === pushedFilters)
           val pushedParquetFilters = pushedFilters.map { pred =>
-            val maybeFilter = parquetFilters.createFilter(pred)
+            val maybeFilter: Option[FilterPredicate] = None // parquetFilters.createFilter(pred)
             assert(maybeFilter.isDefined, s"Couldn't generate filter predicate for $pred")
             maybeFilter.get
           }

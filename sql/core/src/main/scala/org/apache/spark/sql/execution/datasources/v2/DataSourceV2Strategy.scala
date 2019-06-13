@@ -29,6 +29,7 @@ import org.apache.spark.sql.execution.{FilterExec, ProjectExec, SparkPlan}
 import org.apache.spark.sql.execution.datasources.DataSourceStrategy
 import org.apache.spark.sql.execution.streaming.continuous.{ContinuousCoalesceExec, WriteToContinuousDataSource, WriteToContinuousDataSourceExec}
 import org.apache.spark.sql.sources
+import org.apache.spark.sql.sources.v2.FilterV2
 import org.apache.spark.sql.sources.v2.reader._
 import org.apache.spark.sql.sources.v2.reader.streaming.{ContinuousStream, MicroBatchStream}
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
@@ -49,13 +50,13 @@ object DataSourceV2Strategy extends Strategy with PredicateHelper {
         // expressions. For a `And`/`Or` predicate, it is possible that the predicate is partially
         // pushed down. This map can be used to construct a catalyst filter expression from the
         // input filter, or a superset(partial push down filter) of the input filter.
-        val translatedFilterToExpr = mutable.HashMap.empty[sources.Filter, Expression]
-        val translatedFilters = mutable.ArrayBuffer.empty[sources.Filter]
+        val translatedFilterToExpr = mutable.HashMap.empty[FilterV2, Expression]
+        val translatedFilters = mutable.ArrayBuffer.empty[FilterV2]
         // Catalyst filter expression that can't be translated to data source filters.
         val untranslatableExprs = mutable.ArrayBuffer.empty[Expression]
 
         for (filterExpr <- filters) {
-          val translated =
+          val translated: Option[FilterV2] =
             DataSourceStrategy.translateFilterWithMapping(filterExpr, Some(translatedFilterToExpr))
           if (translated.isEmpty) {
             untranslatableExprs += filterExpr
@@ -68,14 +69,16 @@ object DataSourceV2Strategy extends Strategy with PredicateHelper {
         // the data source cannot guarantee the rows returned can pass these filters.
         // As a result we must return it so Spark can plan an extra filter operator.
         val postScanFilters = r.pushFilters(translatedFilters.toArray).map { filter =>
-          DataSourceStrategy.rebuildExpressionFromFilter(filter, translatedFilterToExpr)
+          // DataSourceStrategy.rebuildExpressionFromFilter(filter, translatedFilterToExpr)
+          ???
         }
         // The filters which are marked as pushed to this data source
         val pushedFilters = r.pushedFilters().map { filter =>
-          DataSourceStrategy.rebuildExpressionFromFilter(filter, translatedFilterToExpr)
+          // DataSourceStrategy.rebuildExpressionFromFilter(filter, translatedFilterToExpr)
+          ???
         }
-        (pushedFilters, untranslatableExprs ++ postScanFilters)
-
+        // (pushedFilters, untranslatableExprs ++ postScanFilters)
+        (filters, filters)
       case _ => (Nil, filters)
     }
   }
@@ -212,7 +215,7 @@ object DataSourceV2Strategy extends Strategy with PredicateHelper {
     case OverwriteByExpression(r: DataSourceV2Relation, deleteExpr, query, _) =>
       // fail if any filter cannot be converted. correctness depends on removing all matching data.
       val filters = splitConjunctivePredicates(deleteExpr).map {
-        filter => DataSourceStrategy.translateFilter(deleteExpr).getOrElse(
+        filter => DataSourceStrategy.translateFilterV2(deleteExpr).getOrElse(
           throw new AnalysisException(s"Cannot translate expression to source filter: $filter"))
       }.toArray
 

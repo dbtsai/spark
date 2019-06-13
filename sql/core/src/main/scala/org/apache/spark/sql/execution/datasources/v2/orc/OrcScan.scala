@@ -22,7 +22,7 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.execution.datasources.PartitioningAwareFileIndex
 import org.apache.spark.sql.execution.datasources.v2.FileScan
-import org.apache.spark.sql.sources.Filter
+import org.apache.spark.sql.sources.v2.FilterV2
 import org.apache.spark.sql.sources.v2.reader.PartitionReaderFactory
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
@@ -36,7 +36,7 @@ case class OrcScan(
     readDataSchema: StructType,
     readPartitionSchema: StructType,
     options: CaseInsensitiveStringMap,
-    pushedFilters: Array[Filter])
+    pushedFilters: Array[FilterV2])
   extends FileScan(sparkSession, fileIndex, readDataSchema, readPartitionSchema) {
   override def isSplitable(path: Path): Boolean = true
 
