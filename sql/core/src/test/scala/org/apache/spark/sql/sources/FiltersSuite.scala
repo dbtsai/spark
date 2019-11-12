@@ -18,6 +18,7 @@
 package org.apache.spark.sql.sources
 
 import org.apache.spark.SparkFunSuite
+import org.apache.spark.sql.sources.v2.FiltersV2Suite.ref
 
 /**
  * Unit test suites for data source filters.
@@ -27,26 +28,51 @@ class FiltersSuite extends SparkFunSuite {
   test("EqualTo references") {
     assert(EqualTo("a", "1").references.toSeq == Seq("a"))
     assert(EqualTo("a", EqualTo("b", "2")).references.toSeq == Seq("a", "b"))
+
+    // Testing v1 to v2 filter conversions
+    assert(EqualTo("a", "1").toV2 == v2.EqualTo(ref("a"), "1"))
+    assert(EqualTo("a", EqualTo("b", "2")).toV2 ==
+      v2.EqualTo(ref("a"), v2.EqualTo(ref("b"), "2")))
   }
 
   test("EqualNullSafe references") {
     assert(EqualNullSafe("a", "1").references.toSeq == Seq("a"))
     assert(EqualNullSafe("a", EqualTo("b", "2")).references.toSeq == Seq("a", "b"))
+
+    // Testing v1 to v2 filter conversions
+    assert(EqualNullSafe("a", "1").toV2 == v2.EqualNullSafe(ref("a"), "1"))
+    assert(EqualNullSafe("a", EqualTo("b", "2")).toV2 ==
+      v2.EqualNullSafe(ref("a"), v2.EqualTo(ref("b"), "2")))
   }
 
   test("GreaterThan references") {
     assert(GreaterThan("a", "1").references.toSeq == Seq("a"))
     assert(GreaterThan("a", EqualTo("b", "2")).references.toSeq == Seq("a", "b"))
+
+    // Testing v1 to v2 filter conversions
+    assert(GreaterThan("a", "1").toV2 == v2.GreaterThan(ref("a"), "1"))
+    assert(GreaterThan("a", EqualTo("b", "2")).toV2 ==
+      v2.GreaterThan(ref("a"), v2.EqualTo(ref("b"), "2")))
   }
 
   test("GreaterThanOrEqual references") {
     assert(GreaterThanOrEqual("a", "1").references.toSeq == Seq("a"))
     assert(GreaterThanOrEqual("a", EqualTo("b", "2")).references.toSeq == Seq("a", "b"))
+
+    // Testing v1 to v2 filter conversions
+    assert(GreaterThanOrEqual("a", "1").toV2 == v2.GreaterThanOrEqual(ref("a"), "1"))
+    assert(GreaterThanOrEqual("a", EqualTo("b", "2")).toV2 ==
+      v2.GreaterThanOrEqual(ref("a"), v2.EqualTo(ref("b"), "2")))
   }
 
   test("LessThan references") {
     assert(LessThan("a", "1").references.toSeq == Seq("a"))
     assert(LessThan("a", EqualTo("b", "2")).references.toSeq == Seq("a", "b"))
+
+    // Testing v1 to v2 filter conversions
+    assert(LessThan("a", "1").toV2 == v2.LessThan(ref("a"), "1"))
+    assert(LessThan("a", EqualTo("b", "2")).toV2 ==
+      v2.LessThan(ref("a"), v2.EqualTo(ref("b"), "2")))
   }
 
   test("LessThanOrEqual references") {

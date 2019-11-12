@@ -39,14 +39,14 @@ object PushDownUtils extends PredicateHelper {
         // expressions. For a `And`/`Or` predicate, it is possible that the predicate is partially
         // pushed down. This map can be used to construct a catalyst filter expression from the
         // input filter, or a superset(partial push down filter) of the input filter.
-        val translatedFilterToExpr = mutable.HashMap.empty[sources.Filter, Expression]
-        val translatedFilters = mutable.ArrayBuffer.empty[sources.Filter]
+        val translatedFilterToExpr = mutable.HashMap.empty[sources.v2.FilterV2, Expression]
+        val translatedFilters = mutable.ArrayBuffer.empty[sources.v2.FilterV2]
         // Catalyst filter expression that can't be translated to data source filters.
         val untranslatableExprs = mutable.ArrayBuffer.empty[Expression]
 
         for (filterExpr <- filters) {
-          val translated =
-            DataSourceStrategy.translateFilterWithMapping(filterExpr, Some(translatedFilterToExpr))
+          val translated = DataSourceV2Strategy
+            .translateFilterV2WithMapping(filterExpr, Some(translatedFilterToExpr))
           if (translated.isEmpty) {
             untranslatableExprs += filterExpr
           } else {
@@ -58,11 +58,11 @@ object PushDownUtils extends PredicateHelper {
         // the data source cannot guarantee the rows returned can pass these filters.
         // As a result we must return it so Spark can plan an extra filter operator.
         val postScanFilters = r.pushFilters(translatedFilters.toArray).map { filter =>
-          DataSourceStrategy.rebuildExpressionFromFilter(filter, translatedFilterToExpr)
+          DataSourceV2Strategy.rebuildExpressionFromFilter(filter, translatedFilterToExpr)
         }
         // The filters which are marked as pushed to this data source
         val pushedFilters = r.pushedFilters().map { filter =>
-          DataSourceStrategy.rebuildExpressionFromFilter(filter, translatedFilterToExpr)
+          DataSourceV2Strategy.rebuildExpressionFromFilter(filter, translatedFilterToExpr)
         }
         (pushedFilters, untranslatableExprs ++ postScanFilters)
 

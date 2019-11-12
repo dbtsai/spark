@@ -27,9 +27,10 @@ import org.scalatest.Assertions._
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.connector.catalog._
 import org.apache.spark.sql.connector.expressions.{IdentityTransform, Transform}
+import org.apache.spark.sql.connector.expressions.NamedReference
 import org.apache.spark.sql.connector.read._
 import org.apache.spark.sql.connector.write._
-import org.apache.spark.sql.sources.{And, EqualTo, Filter, IsNotNull}
+import org.apache.spark.sql.sources.v2.{And, EqualTo, FilterV2, IsNotNull}
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
 
@@ -59,8 +60,8 @@ class InMemoryTable(
 
   def rows: Seq[InternalRow] = dataMap.values.flatMap(_.rows).toSeq
 
-  private val partFieldNames = partitioning.flatMap(_.references).toSeq.flatMap(_.fieldNames)
-  private val partIndexes = partFieldNames.map(schema.fieldIndex)
+  private val partFieldNames = partitioning.flatMap(_.references).toSeq
+  private val partIndexes = partFieldNames.flatMap(_.fieldNames).map(schema.fieldIndex)
 
   private def getKey(row: InternalRow): Seq[Any] = partIndexes.map(row.toSeq(schema)(_))
 
@@ -107,7 +108,7 @@ class InMemoryTable(
         this
       }
 
-      override def overwrite(filters: Array[Filter]): WriteBuilder = {
+      override def overwrite(filters: Array[FilterV2]): WriteBuilder = {
         assert(writer == Append)
         writer = new Overwrite(filters)
         this
@@ -145,7 +146,7 @@ class InMemoryTable(
     }
   }
 
-  private class Overwrite(filters: Array[Filter]) extends TestBatchWrite {
+  private class Overwrite(filters: Array[FilterV2]) extends TestBatchWrite {
     override def commit(messages: Array[WriterCommitMessage]): Unit = dataMap.synchronized {
       val deleteKeys = InMemoryTable.filtersToKeys(dataMap.keys, partFieldNames, filters)
       dataMap --= deleteKeys
@@ -160,7 +161,7 @@ class InMemoryTable(
     }
   }
 
-  override def deleteWhere(filters: Array[Filter]): Unit = dataMap.synchronized {
+  override def deleteWhere(filters: Array[FilterV2]): Unit = dataMap.synchronized {
     dataMap --= InMemoryTable.filtersToKeys(dataMap.keys, partFieldNames, filters)
   }
 }
@@ -170,8 +171,8 @@ object InMemoryTable {
 
   def filtersToKeys(
       keys: Iterable[Seq[Any]],
-      partitionNames: Seq[String],
-      filters: Array[Filter]): Iterable[Seq[Any]] = {
+      partitionNames: Seq[NamedReference],
+      filters: Array[FilterV2]): Iterable[Seq[Any]] = {
     keys.filter { partValues =>
       filters.flatMap(splitAnd).forall {
         case EqualTo(attr, value) =>
@@ -185,8 +186,8 @@ object InMemoryTable {
   }
 
   private def extractValue(
-      attr: String,
-      partFieldNames: Seq[String],
+      attr: NamedReference,
+      partFieldNames: Seq[NamedReference],
       partValues: Seq[Any]): Any = {
     partFieldNames.zipWithIndex.find(_._1 == attr) match {
       case Some((_, partIndex)) =>
@@ -196,7 +197,7 @@ object InMemoryTable {
     }
   }
 
-  private def splitAnd(filter: Filter): Seq[Filter] = {
+  private def splitAnd(filter: FilterV2): Seq[FilterV2] = {
     filter match {
       case And(left, right) => splitAnd(left) ++ splitAnd(right)
       case _ => filter :: Nil

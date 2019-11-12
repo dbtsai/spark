@@ -28,7 +28,9 @@ import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 import org.apache.spark.sql.connector.catalog.SupportsWrite
 import org.apache.spark.sql.connector.write.{SupportsOverwrite, SupportsTruncate, V1WriteBuilder, WriteBuilder}
 import org.apache.spark.sql.execution.SparkPlan
-import org.apache.spark.sql.sources.{AlwaysTrue, Filter, InsertableRelation}
+import org.apache.spark.sql.sources.Filter
+import org.apache.spark.sql.sources.InsertableRelation
+import org.apache.spark.sql.sources.v2.{AlwaysTrue, FilterV2}
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
 
 /**
@@ -59,11 +61,11 @@ case class AppendDataExecV1(
  */
 case class OverwriteByExpressionExecV1(
     table: SupportsWrite,
-    deleteWhere: Array[Filter],
+    deleteWhere: Array[FilterV2],
     writeOptions: CaseInsensitiveStringMap,
     plan: LogicalPlan) extends V1FallbackWriters {
 
-  private def isTruncate(filters: Array[Filter]): Boolean = {
+  private def isTruncate(filters: Array[FilterV2]): Boolean = {
     filters.length == 1 && filters(0).isInstanceOf[AlwaysTrue]
   }
 

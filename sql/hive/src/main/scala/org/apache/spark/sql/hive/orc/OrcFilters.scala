@@ -25,10 +25,13 @@ import org.apache.hadoop.hive.ql.io.sarg.SearchArgumentFactory.newBuilder
 
 import org.apache.spark.SparkException
 import org.apache.spark.internal.Logging
+import org.apache.spark.sql.connector.expressions.FieldReference
+import org.apache.spark.sql.connector.expressions.NamedReference
 import org.apache.spark.sql.execution.datasources.orc.{OrcFilters => DatasourceOrcFilters}
 import org.apache.spark.sql.execution.datasources.orc.OrcFilters.buildTree
 import org.apache.spark.sql.hive.HiveUtils
 import org.apache.spark.sql.sources._
+import org.apache.spark.sql.sources.v2.FilterV2
 import org.apache.spark.sql.types._
 
 /**
@@ -69,11 +72,17 @@ private[orc] object OrcFilters extends Logging {
     method
   }
 
-  def createFilter(schema: StructType, filters: Array[Filter]): Option[SearchArgument] = {
+  def createFilter(schema: StructType, filters: Seq[Filter])(implicit d: DummyImplicit)
+      : Option[SearchArgument] = {
+    createFilter(schema, filters.map(_.toV2))
+  }
+
+  def createFilter(schema: StructType, filters: Seq[FilterV2]): Option[SearchArgument] = {
     if (HiveUtils.isHive23) {
       DatasourceOrcFilters.createFilter(schema, filters).asInstanceOf[Option[SearchArgument]]
     } else {
-      val dataTypeMap = schema.map(f => f.name -> f.dataType).toMap
+    val dataTypeMap: Map[NamedReference, DataType] =
+      schema.map(f => FieldReference(Seq(f.name)) -> f.dataType).toMap
       // Combines all convertible filters using `And` to produce a single conjunction
       val conjunctionOptional = buildTree(convertibleFilters(schema, dataTypeMap, filters))
       conjunctionOptional.map { conjunction =>
@@ -87,13 +96,13 @@ private[orc] object OrcFilters extends Logging {
 
   def convertibleFilters(
       schema: StructType,
-      dataTypeMap: Map[String, DataType],
-      filters: Seq[Filter]): Seq[Filter] = {
+      dataTypeMap: Map[NamedReference, DataType],
+      filters: Seq[FilterV2]): Seq[FilterV2] = {
     import org.apache.spark.sql.sources._
 
     def convertibleFiltersHelper(
-        filter: Filter,
-        canPartialPushDown: Boolean): Option[Filter] = filter match {
+        filter: FilterV2,
+        canPartialPushDown: Boolean): Option[FilterV2] = filter match {
       // At here, it is not safe to just convert one side and remove the other side
       // if we do not understand what the parent filters are.
       //
@@ -105,11 +114,11 @@ private[orc] object OrcFilters extends Logging {
       // Pushing one side of AND down is only safe to do at the top level or in the child
       // AND before hitting NOT or OR conditions, and in this case, the unsupported predicate
       // can be safely removed.
-      case And(left, right) =>
+      case v2.And(left, right) =>
         val leftResultOptional = convertibleFiltersHelper(left, canPartialPushDown)
         val rightResultOptional = convertibleFiltersHelper(right, canPartialPushDown)
         (leftResultOptional, rightResultOptional) match {
-          case (Some(leftResult), Some(rightResult)) => Some(And(leftResult, rightResult))
+          case (Some(leftResult), Some(rightResult)) => Some(v2.And(leftResult, rightResult))
           case (Some(leftResult), None) if canPartialPushDown => Some(leftResult)
           case (None, Some(rightResult)) if canPartialPushDown => Some(rightResult)
           case _ => None
@@ -126,14 +135,14 @@ private[orc] object OrcFilters extends Logging {
       // The predicate can be converted as
       // (a1 OR b1) AND (a1 OR b2) AND (a2 OR b1) AND (a2 OR b2)
       // As per the logical in And predicate, we can push down (a1 OR b1).
-      case Or(left, right) =>
+      case v2.Or(left, right) =>
         for {
           lhs <- convertibleFiltersHelper(left, canPartialPushDown)
           rhs <- convertibleFiltersHelper(right, canPartialPushDown)
-        } yield Or(lhs, rhs)
-      case Not(pred) =>
+        } yield v2.Or(lhs, rhs)
+      case v2.Not(pred) =>
         val childResultOptional = convertibleFiltersHelper(pred, canPartialPushDown = false)
-        childResultOptional.map(Not)
+        childResultOptional.map(v2.Not)
       case other =>
         for (_ <- buildLeafSearchArgument(dataTypeMap, other, newBuilder())) yield other
     }
@@ -151,21 +160,21 @@ private[orc] object OrcFilters extends Logging {
    * @return the builder so far.
    */
   private def buildSearchArgument(
-      dataTypeMap: Map[String, DataType],
-      expression: Filter,
+      dataTypeMap: Map[NamedReference, DataType],
+      expression: FilterV2,
       builder: Builder): Builder = {
     expression match {
-      case And(left, right) =>
+      case v2.And(left, right) =>
         val lhs = buildSearchArgument(dataTypeMap, left, builder.startAnd())
         val rhs = buildSearchArgument(dataTypeMap, right, lhs)
         rhs.end()
 
-      case Or(left, right) =>
+      case v2.Or(left, right) =>
         val lhs = buildSearchArgument(dataTypeMap, left, builder.startOr())
         val rhs = buildSearchArgument(dataTypeMap, right, lhs)
         rhs.end()
 
-      case Not(child) =>
+      case v2.Not(child) =>
         buildSearchArgument(dataTypeMap, child, builder.startNot()).end()
 
       case other =>
@@ -185,8 +194,8 @@ private[orc] object OrcFilters extends Logging {
    * @return the builder so far.
    */
   private def buildLeafSearchArgument(
-      dataTypeMap: Map[String, DataType],
-      expression: Filter,
+      dataTypeMap: Map[NamedReference, DataType],
+      expression: FilterV2,
       builder: Builder): Option[Builder] = {
     def isSearchableType(dataType: DataType): Boolean = dataType match {
       // Only the values in the Spark types below can be recognized by
@@ -207,47 +216,47 @@ private[orc] object OrcFilters extends Logging {
       // call is mandatory.  ORC `SearchArgument` builder requires that all leaf predicates must be
       // wrapped by a "parent" predicate (`And`, `Or`, or `Not`).
 
-      case EqualTo(attribute, value) if isSearchableType(dataTypeMap(attribute)) =>
+      case v2.EqualTo(attribute, value) if isSearchableType(dataTypeMap(attribute)) =>
         val bd = builder.startAnd()
         val method = findMethod(bd.getClass, "equals", classOf[String], classOf[Object])
         Some(method.invoke(bd, attribute, value.asInstanceOf[AnyRef]).asInstanceOf[Builder].end())
 
-      case EqualNullSafe(attribute, value) if isSearchableType(dataTypeMap(attribute)) =>
+      case v2.EqualNullSafe(attribute, value) if isSearchableType(dataTypeMap(attribute)) =>
         val bd = builder.startAnd()
         val method = findMethod(bd.getClass, "nullSafeEquals", classOf[String], classOf[Object])
         Some(method.invoke(bd, attribute, value.asInstanceOf[AnyRef]).asInstanceOf[Builder].end())
 
-      case LessThan(attribute, value) if isSearchableType(dataTypeMap(attribute)) =>
+      case v2.LessThan(attribute, value) if isSearchableType(dataTypeMap(attribute)) =>
         val bd = builder.startAnd()
         val method = findMethod(bd.getClass, "lessThan", classOf[String], classOf[Object])
         Some(method.invoke(bd, attribute, value.asInstanceOf[AnyRef]).asInstanceOf[Builder].end())
 
-      case LessThanOrEqual(attribute, value) if isSearchableType(dataTypeMap(attribute)) =>
+      case v2.LessThanOrEqual(attribute, value) if isSearchableType(dataTypeMap(attribute)) =>
         val bd = builder.startAnd()
         val method = findMethod(bd.getClass, "lessThanEquals", classOf[String], classOf[Object])
         Some(method.invoke(bd, attribute, value.asInstanceOf[AnyRef]).asInstanceOf[Builder].end())
 
-      case GreaterThan(attribute, value) if isSearchableType(dataTypeMap(attribute)) =>
+      case v2.GreaterThan(attribute, value) if isSearchableType(dataTypeMap(attribute)) =>
         val bd = builder.startNot()
         val method = findMethod(bd.getClass, "lessThanEquals", classOf[String], classOf[Object])
         Some(method.invoke(bd, attribute, value.asInstanceOf[AnyRef]).asInstanceOf[Builder].end())
 
-      case GreaterThanOrEqual(attribute, value) if isSearchableType(dataTypeMap(attribute)) =>
+      case v2.GreaterThanOrEqual(attribute, value) if isSearchableType(dataTypeMap(attribute)) =>
         val bd = builder.startNot()
         val method = findMethod(bd.getClass, "lessThan", classOf[String], classOf[Object])
         Some(method.invoke(bd, attribute, value.asInstanceOf[AnyRef]).asInstanceOf[Builder].end())
 
-      case IsNull(attribute) if isSearchableType(dataTypeMap(attribute)) =>
+      case v2.IsNull(attribute) if isSearchableType(dataTypeMap(attribute)) =>
         val bd = builder.startAnd()
         val method = findMethod(bd.getClass, "isNull", classOf[String])
         Some(method.invoke(bd, attribute).asInstanceOf[Builder].end())
 
-      case IsNotNull(attribute) if isSearchableType(dataTypeMap(attribute)) =>
+      case v2.IsNotNull(attribute) if isSearchableType(dataTypeMap(attribute)) =>
         val bd = builder.startNot()
         val method = findMethod(bd.getClass, "isNull", classOf[String])
         Some(method.invoke(bd, attribute).asInstanceOf[Builder].end())
 
-      case In(attribute, values) if isSearchableType(dataTypeMap(attribute)) =>
+      case v2.In(attribute, values) if isSearchableType(dataTypeMap(attribute)) =>
         val bd = builder.startAnd()
         val method = findMethod(bd.getClass, "in", classOf[String], classOf[Array[Object]])
         Some(method.invoke(bd, attribute, values.map(_.asInstanceOf[AnyRef]))

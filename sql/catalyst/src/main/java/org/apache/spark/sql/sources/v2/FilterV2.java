@@ -15,21 +15,23 @@
  * limitations under the License.
  */
 
-package org.apache.spark.sql.execution.datasources.v2
+package org.apache.spark.sql.sources.v2;
 
-import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.Attribute
-import org.apache.spark.sql.connector.catalog.SupportsDelete
-import org.apache.spark.sql.sources.v2.FilterV2
+import org.apache.spark.annotation.Experimental;
+import org.apache.spark.sql.connector.expressions.NamedReference;
 
-case class DeleteFromTableExec(
-    table: SupportsDelete,
-    condition: Array[FilterV2]) extends V2CommandExec {
+@Experimental
+public abstract class FilterV2 {
+  /**
+   * Returns list of columns that are referenced by this filter.
+   */
+  public abstract NamedReference[] references();
 
-  override protected def run(): Seq[InternalRow] = {
-    table.deleteWhere(condition)
-    Seq.empty
+  protected NamedReference[] findReferences(Object valve) {
+    if (valve instanceof FilterV2) {
+      return ((FilterV2) valve).references();
+    } else {
+      return new NamedReference[0];
+    }
   }
-
-  override def output: Seq[Attribute] = Nil
 }

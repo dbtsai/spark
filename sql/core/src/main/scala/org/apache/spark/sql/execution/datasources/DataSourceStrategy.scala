@@ -433,6 +433,7 @@ object DataSourceStrategy {
    * is case insensitive. We should change attribute names to match the ones in the schema,
    * so we do not need to worry about case sensitivity anymore.
    */
+  // TODO (DB Tsai): Handel the case sensitivity of nested columns
   protected[sql] def normalizeExprs(
       exprs: Seq[Expression],
       attributes: Seq[AttributeReference]): Seq[Expression] = {

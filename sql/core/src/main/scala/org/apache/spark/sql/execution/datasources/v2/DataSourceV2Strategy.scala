@@ -18,21 +18,187 @@
 package org.apache.spark.sql.execution.datasources.v2
 
 import scala.collection.JavaConverters._
+import scala.collection.mutable
 
 import org.apache.spark.sql.{AnalysisException, Strategy}
-import org.apache.spark.sql.catalyst.expressions.{And, PredicateHelper, SubqueryExpression}
+import org.apache.spark.sql.catalyst.CatalystTypeConverters
+import org.apache.spark.sql.catalyst.CatalystTypeConverters.convertToScala
+import org.apache.spark.sql.catalyst.expressions
+import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.planning.PhysicalOperation
+import org.apache.spark.sql.catalyst.plans.logical._
 import org.apache.spark.sql.catalyst.plans.logical.{AlterNamespaceSetProperties, AlterTable, AppendData, CreateNamespace, CreateTableAsSelect, CreateV2Table, DeleteFromTable, DescribeNamespace, DescribeTable, DropNamespace, DropTable, LogicalPlan, OverwriteByExpression, OverwritePartitionsDynamic, RefreshTable, RenameTable, Repartition, ReplaceTable, ReplaceTableAsSelect, SetCatalogAndNamespace, ShowCurrentNamespace, ShowNamespaces, ShowTableProperties, ShowTables}
 import org.apache.spark.sql.connector.catalog.{StagingTableCatalog, TableCapability}
+import org.apache.spark.sql.connector.expressions.FieldReference
+import org.apache.spark.sql.connector.expressions.NamedReference
 import org.apache.spark.sql.connector.read.streaming.{ContinuousStream, MicroBatchStream}
 import org.apache.spark.sql.execution.{FilterExec, ProjectExec, SparkPlan}
 import org.apache.spark.sql.execution.datasources.DataSourceStrategy
-import org.apache.spark.sql.execution.streaming.continuous.{ContinuousCoalesceExec, WriteToContinuousDataSource, WriteToContinuousDataSourceExec}
+import org.apache.spark.sql.execution.streaming.continuous._
+import org.apache.spark.sql.sources
+import org.apache.spark.sql.sources.v2.FilterV2
+import org.apache.spark.sql.types.BooleanType
+import org.apache.spark.sql.types.StringType
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
+import org.apache.spark.unsafe.types.UTF8String
 
 object DataSourceV2Strategy extends Strategy with PredicateHelper {
 
   import DataSourceV2Implicits._
+
+  /**
+   * Tries to convert an [[Expression]] that can be pushed down to a [[NamedReference]]
+   */
+  private def toNamedRef(e: Expression): Option[NamedReference] = {
+    def helper(e: Expression): Option[Seq[String]] = e match {
+      case a: Attribute =>
+        Some(Seq(a.name))
+      case s: GetStructField =>
+        helper(s.child).map(_ ++ Seq(s.childSchema(s.ordinal).name))
+      case _ =>
+        None
+    }
+    helper(e).map(fieldNames => FieldReference(fieldNames))
+  }
+
+  private def translateLeafNodeFilterV2(predicate: Expression): Option[FilterV2] = predicate match {
+    case expressions.EqualTo(e: Expression, Literal(v, t)) =>
+      toNamedRef(e).map(field => sources.v2.EqualTo(field, convertToScala(v, t)))
+    case expressions.EqualTo(Literal(v, t), e: Expression) =>
+      toNamedRef(e).map(field => sources.v2.EqualTo(field, convertToScala(v, t)))
+
+    case expressions.EqualNullSafe(e: Expression, Literal(v, t)) =>
+      toNamedRef(e).map(field => sources.v2.EqualNullSafe(field, convertToScala(v, t)))
+    case expressions.EqualNullSafe(Literal(v, t), e: Expression) =>
+      toNamedRef(e).map(field => sources.v2.EqualNullSafe(field, convertToScala(v, t)))
+
+    case expressions.GreaterThan(e: Expression, Literal(v, t)) =>
+      toNamedRef(e).map(field => sources.v2.GreaterThan(field, convertToScala(v, t)))
+    case expressions.GreaterThan(Literal(v, t), e: Expression) =>
+      toNamedRef(e).map(field => sources.v2.LessThan(field, convertToScala(v, t)))
+
+    case expressions.LessThan(e: Expression, Literal(v, t)) =>
+      toNamedRef(e).map(field => sources.v2.LessThan(field, convertToScala(v, t)))
+    case expressions.LessThan(Literal(v, t), e: Expression) =>
+      toNamedRef(e).map(field => sources.v2.GreaterThan(field, convertToScala(v, t)))
+
+    case expressions.GreaterThanOrEqual(e: Expression, Literal(v, t)) =>
+      toNamedRef(e).map(field => sources.v2.GreaterThanOrEqual(field, convertToScala(v, t)))
+    case expressions.GreaterThanOrEqual(Literal(v, t), e: Expression) =>
+      toNamedRef(e).map(field => sources.v2.LessThanOrEqual(field, convertToScala(v, t)))
+
+    case expressions.LessThanOrEqual(e: Expression, Literal(v, t)) =>
+      toNamedRef(e).map(field => sources.v2.LessThanOrEqual(field, convertToScala(v, t)))
+    case expressions.LessThanOrEqual(Literal(v, t), e: Expression) =>
+      toNamedRef(e).map(field => sources.v2.GreaterThanOrEqual(field, convertToScala(v, t)))
+
+    case expressions.InSet(e: Expression, set) =>
+      val toScala = CatalystTypeConverters.createToScalaConverter(e.dataType)
+      toNamedRef(e).map(field => sources.v2.In(field, set.toArray.map(toScala)))
+
+    // Because we only convert In to InSet in Optimizer when there are more than certain
+    // items. So it is possible we still get an In expression here that needs to be pushed
+    // down.
+    case expressions.In(e: Expression, list) if list.forall(_.isInstanceOf[Literal]) =>
+      val hSet = list.map(_.eval(EmptyRow))
+      val toScala = CatalystTypeConverters.createToScalaConverter(e.dataType)
+      toNamedRef(e).map(field => sources.v2.In(field, hSet.toArray.map(toScala)))
+
+    case expressions.IsNull(e: Expression) =>
+      toNamedRef(e).map(field => sources.v2.IsNull(field))
+    case expressions.IsNotNull(e: Expression) =>
+      toNamedRef(e).map(field => sources.v2.IsNotNull(field))
+    case expressions.StartsWith(e: Expression, Literal(v: UTF8String, StringType)) =>
+      toNamedRef(e).map(field => sources.v2.StringStartsWith(field, v.toString))
+
+    case expressions.EndsWith(e: Expression, Literal(v: UTF8String, StringType)) =>
+      toNamedRef(e).map(field => sources.v2.StringEndsWith(field, v.toString))
+
+    case expressions.Contains(e: Expression, Literal(v: UTF8String, StringType)) =>
+      toNamedRef(e).map(field => sources.v2.StringContains(field, v.toString))
+
+    case expressions.Literal(true, BooleanType) =>
+      Some(sources.v2.AlwaysTrue)
+
+    case expressions.Literal(false, BooleanType) =>
+      Some(sources.v2.AlwaysFalse)
+
+    case _ => None
+  }
+
+  /**
+   * Tries to translate a Catalyst [[Expression]] into data source [[FilterV2]].
+   *
+   * @return a `Some[Filter]` if the input [[Expression]] is convertible, otherwise a `None`.
+   */
+  protected[sql] def translateFilterV2(predicate: Expression): Option[FilterV2] = {
+    translateFilterV2WithMapping(predicate, None)
+  }
+  /**
+   * Tries to translate a Catalyst [[Expression]] into data source [[FilterV2]].
+   *
+   * @param predicate The input [[Expression]] to be translated as [[FilterV2]]
+   * @param translatedFilterToExpr An optional map from leaf node filter expressions to its
+   *                               translated [[FilterV2]]. The map is used for rebuilding
+   *                               [[Expression]] from [[FilterV2]].
+   * @return a `Some[Filter]` if the input [[Expression]] is convertible, otherwise a `None`.
+   */
+  protected[sql] def translateFilterV2WithMapping(
+      predicate: Expression,
+      translatedFilterToExpr: Option[mutable.HashMap[sources.v2.FilterV2, Expression]])
+    : Option[sources.v2.FilterV2] = {
+    predicate match {
+      case expressions.And(left, right) =>
+        // See SPARK-12218 for detailed discussion
+        // It is not safe to just convert one side if we do not understand the
+        // other side. Here is an example used to explain the reason.
+        // Let's say we have (a = 2 AND trim(b) = 'blah') OR (c > 0)
+        // and we do not understand how to convert trim(b) = 'blah'.
+        // If we only convert a = 2, we will end up with
+        // (a = 2) OR (c > 0), which will generate wrong results.
+        // Pushing one leg of AND down is only safe to do at the top level.
+        // You can see ParquetFilters' createFilter for more details.
+        for {
+          leftFilter <- translateFilterV2WithMapping(left, translatedFilterToExpr)
+          rightFilter <- translateFilterV2WithMapping(right, translatedFilterToExpr)
+        } yield sources.v2.And(leftFilter, rightFilter)
+
+      case expressions.Or(left, right) =>
+        for {
+          leftFilter <- translateFilterV2WithMapping(left, translatedFilterToExpr)
+          rightFilter <- translateFilterV2WithMapping(right, translatedFilterToExpr)
+        } yield sources.v2.Or(leftFilter, rightFilter)
+
+      case expressions.Not(child) =>
+        translateFilterV2WithMapping(child, translatedFilterToExpr).map(sources.v2.Not)
+
+      case other =>
+        val filter = translateLeafNodeFilterV2(other)
+        if (filter.isDefined && translatedFilterToExpr.isDefined) {
+          translatedFilterToExpr.get(filter.get) = predicate
+        }
+        filter
+    }
+  }
+
+  protected[sql] def rebuildExpressionFromFilter(
+      filter: FilterV2,
+      translatedFilterToExpr: mutable.HashMap[sources.v2.FilterV2, Expression]): Expression = {
+    filter match {
+      case sources.v2.And(left, right) =>
+        expressions.And(rebuildExpressionFromFilter(left, translatedFilterToExpr),
+          rebuildExpressionFromFilter(right, translatedFilterToExpr))
+      case sources.v2.Or(left, right) =>
+        expressions.Or(rebuildExpressionFromFilter(left, translatedFilterToExpr),
+          rebuildExpressionFromFilter(right, translatedFilterToExpr))
+      case sources.v2.Not(pred) =>
+        expressions.Not(rebuildExpressionFromFilter(pred, translatedFilterToExpr))
+      case other =>
+        translatedFilterToExpr.getOrElse(other,
+          throw new AnalysisException(
+            s"Fail to rebuild expression: missing key $filter in `translatedFilterToExpr`"))
+    }
+  }
 
   override def apply(plan: LogicalPlan): Seq[SparkPlan] = plan match {
     case PhysicalOperation(project, filters, relation: DataSourceV2ScanRelation) =>
@@ -143,7 +309,7 @@ object DataSourceV2Strategy extends Strategy with PredicateHelper {
     case OverwriteByExpression(r: DataSourceV2Relation, deleteExpr, query, writeOptions, _) =>
       // fail if any filter cannot be converted. correctness depends on removing all matching data.
       val filters = splitConjunctivePredicates(deleteExpr).map {
-        filter => DataSourceStrategy.translateFilter(deleteExpr).getOrElse(
+        filter => translateFilterV2(deleteExpr).getOrElse(
           throw new AnalysisException(s"Cannot translate expression to source filter: $filter"))
       }.toArray
       r.table.asWritable match {
@@ -168,7 +334,7 @@ object DataSourceV2Strategy extends Strategy with PredicateHelper {
           // correctness depends on removing all matching data.
           val filters = DataSourceStrategy.normalizeExprs(condition.toSeq, output)
               .flatMap(splitConjunctivePredicates(_).map {
-                f => DataSourceStrategy.translateFilter(f).getOrElse(
+                f => translateFilterV2(f).getOrElse(
                   throw new AnalysisException(s"Exec update failed:" +
                       s" cannot translate expression to source filter: $f"))
               }).toArray

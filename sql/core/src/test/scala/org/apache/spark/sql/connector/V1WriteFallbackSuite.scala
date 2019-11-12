@@ -28,10 +28,11 @@ import org.apache.spark.sql.{AnalysisException, DataFrame, QueryTest, Row, SaveM
 import org.apache.spark.sql.connector.catalog.{SupportsWrite, Table, TableCapability, TableProvider}
 import org.apache.spark.sql.connector.expressions.{FieldReference, IdentityTransform, Transform}
 import org.apache.spark.sql.connector.write.{SupportsOverwrite, SupportsTruncate, V1WriteBuilder, WriteBuilder}
-import org.apache.spark.sql.execution.datasources.{DataSource, DataSourceUtils}
+import org.apache.spark.sql.execution.datasources.DataSourceUtils
 import org.apache.spark.sql.sources._
+import org.apache.spark.sql.sources.v2.FilterV2
 import org.apache.spark.sql.test.SharedSparkSession
-import org.apache.spark.sql.types.{IntegerType, StringType, StructType}
+import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
 
 class V1WriteFallbackSuite extends QueryTest with SharedSparkSession with BeforeAndAfter {
@@ -262,8 +263,8 @@ class InMemoryTableWithV1Fallback(
     TableCapability.TRUNCATE).asJava
 
   @volatile private var dataMap: mutable.Map[Seq[Any], Seq[Row]] = mutable.Map.empty
-  private val partFieldNames = partitioning.flatMap(_.references).toSeq.flatMap(_.fieldNames)
-  private val partIndexes = partFieldNames.map(schema.fieldIndex(_))
+  private val partFieldNames = partitioning.flatMap(_.references).toSeq
+  private val partIndexes = partFieldNames.map(_.describe()).map(schema.fieldIndex(_))
 
   def getData: Seq[Row] = dataMap.values.flatten.toSeq
 
@@ -285,7 +286,7 @@ class InMemoryTableWithV1Fallback(
       this
     }
 
-    override def overwrite(filters: Array[Filter]): WriteBuilder = {
+    override def overwrite(filters: Array[FilterV2]): WriteBuilder = {
       val keys = InMemoryTable.filtersToKeys(dataMap.keys, partFieldNames, filters)
       dataMap --= keys
       mode = "overwrite"

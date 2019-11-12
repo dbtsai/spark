@@ -18,7 +18,7 @@
 package org.apache.spark.sql.connector.catalog;
 
 import org.apache.spark.annotation.Experimental;
-import org.apache.spark.sql.sources.Filter;
+import org.apache.spark.sql.sources.v2.FilterV2;
 
 /**
  * A mix-in interface for {@link Table} delete support. Data sources can implement this
@@ -41,5 +41,5 @@ public interface SupportsDelete {
    * @param filters filter expressions, used to select rows to delete when all expressions match
    * @throws IllegalArgumentException If the delete is rejected due to required effort
    */
-  void deleteWhere(Filter[] filters);
+  void deleteWhere(FilterV2[] filters);
 }
