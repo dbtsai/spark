@@ -34,7 +34,7 @@ import org.apache.spark.sql.sources.v2.FilterV2
 @Stable
 abstract class Filter {
   /**
-   * List of columns that are referenced by this filter.
+   * List of top-level columns that are referenced by this filter.
    * @since 2.1.0
    */
   def references: Array[String]
@@ -46,7 +46,7 @@ abstract class Filter {
 
   private[sql] def toV2: FilterV2
 
-  private[sql] def attToRef(attribute: String): FieldReference = {
+  private[sql] def attToRef(attribute: String): NamedReference = {
     FieldReference(Seq(attribute))
   }
 
