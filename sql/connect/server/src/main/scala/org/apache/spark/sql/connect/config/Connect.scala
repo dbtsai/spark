@@ -132,6 +132,20 @@ object Connect {
       .timeConf(TimeUnit.SECONDS)
       .createWithDefault(ConnectCommon.CONNECT_GRPC_KEEPALIVE_TIMEOUT_SECONDS)
 
+  val CONNECT_NATIVE_ENABLED =
+    buildStaticConf("spark.connect.native.enabled")
+      .internal()
+      .doc("Use the experimental, optional native frontend from Apache spark-connect-rust " +
+        "while retaining the Spark JVM planner and execution engine. Requires a matching " +
+        "versioned frontend implementation JAR and an application-owned default classic " +
+        "SparkSession before the first client request. The current frontend binds to loopback " +
+        "when the binding address is unset, rejects non-loopback addresses, and requires " +
+        "spark.connect.grpc.port.maxRetries=0. Authentication tokens, configured gRPC " +
+        "interceptors, and Connect TLS are unsupported and each fails startup.")
+      .version("4.4.0")
+      .booleanConf
+      .createWithDefault(false)
+
   val CONNECT_SESSION_MANAGER_DEFAULT_SESSION_TIMEOUT =
     buildStaticConf("spark.connect.session.manager.defaultSessionTimeout")
       .internal()

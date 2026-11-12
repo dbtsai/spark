@@ -35,24 +35,33 @@ object SparkConnectServer extends Logging {
       .config(SQLConf.ARTIFACTS_SESSION_ISOLATION_ENABLED.key, true)
       .config(SQLConf.ARTIFACTS_SESSION_ISOLATION_ALWAYS_APPLY_CLASSLOADER.key, true)
       .getOrCreate()
-    try {
-      try {
-        SparkConnectService.start(session.sparkContext)
-        val isa = SparkConnectService.bindingAddress
+    run(
+      start = {
+        SparkConnectServerLifecycle.start(session.sparkContext)
+        val isa = SparkConnectServerLifecycle.bindingAddress
         val host = Utils.normalizeIpIfNeeded(isa.getAddress.getHostAddress)
         logInfo(
           log"Spark Connect server started at: ${MDC(HOST, host)}:${MDC(PORT, isa.getPort)}")
-      } catch {
-        case e: Exception =>
-          logError("Error starting Spark Connect server", e)
-          System.exit(-1)
+      },
+      waitForTermination = SparkConnectServerLifecycle.awaitTermination(),
+      stop = SparkConnectServerLifecycle.stop(),
+      stopSession = session.stop())
+  }
+
+  private[service] def run(
+      start: => Unit,
+      waitForTermination: => Unit,
+      stop: => Unit,
+      stopSession: => Unit): Unit = {
+    Utils.tryWithSafeFinally {
+      start
+      waitForTermination
+    } {
+      Utils.tryWithSafeFinally {
+        stop
+      } {
+        stopSession
       }
-      SparkConnectService.server.awaitTermination()
-    } finally {
-      if (SparkConnectService.started) {
-        SparkConnectService.stop()
-      }
-      session.stop()
     }
   }
 }

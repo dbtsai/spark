@@ -1816,6 +1816,13 @@
     },
     "sqlState" : "XX000"
   },
+  "CONNECT_NATIVE_STARTUP_FAILED" : {
+    "message" : [
+      "Cannot initialize the Spark Connect frontend. Native implementation: <serviceClass>. Setting: <configKey>. Reason: <reason>",
+      "Check the frontend configuration and underlying error. If needed, supply a compatible frontend implementation JAR with --jars or --packages."
+    ],
+    "sqlState" : "56K00"
+  },
   "CONSTRAINT_ALREADY_EXISTS" : {
     "message" : [
       "Constraint '<constraintName>' already exists. Please delete the existing constraint first.",

@@ -20,10 +20,12 @@ package org.apache.spark.sql.connect
 import java.util
 
 import scala.jdk.CollectionConverters._
+import scala.util.control.NonFatal
 
 import org.apache.spark.SparkContext
 import org.apache.spark.api.plugin.{DriverPlugin, ExecutorPlugin, PluginContext, SparkPlugin}
-import org.apache.spark.sql.connect.service.SparkConnectService
+import org.apache.spark.internal.Logging
+import org.apache.spark.sql.connect.service.SparkConnectServerLifecycle
 
 /**
  * This is the main entry point for Spark Connect.
@@ -32,7 +34,7 @@ import org.apache.spark.sql.connect.service.SparkConnectService
  * implement it as a Driver Plugin. To enable Spark Connect, simply make sure that the appropriate
  * JAR is available in the CLASSPATH and the driver plugin is configured to load this class.
  */
-class SparkConnectPlugin extends SparkPlugin {
+class SparkConnectPlugin extends SparkPlugin with Logging {
 
   /**
    * Return the plugin's driver-side component.
@@ -45,12 +47,18 @@ class SparkConnectPlugin extends SparkPlugin {
     override def init(
         sc: SparkContext,
         pluginContext: PluginContext): util.Map[String, String] = {
-      SparkConnectService.start(sc)
+      SparkConnectServerLifecycle.start(sc)
       Map.empty[String, String].asJava
     }
 
     override def shutdown(): Unit = {
-      SparkConnectService.stop()
+      try {
+        SparkConnectServerLifecycle.stop()
+      } catch {
+        case NonFatal(failure) =>
+          logWarning("Spark Connect frontend shutdown failed; ownership is retained for retry.")
+          throw failure
+      }
     }
   }
 

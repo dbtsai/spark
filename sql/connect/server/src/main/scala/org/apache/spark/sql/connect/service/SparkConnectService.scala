@@ -475,20 +475,80 @@ object SparkConnectService extends Logging {
   }
 
   // Starts the service
-  def start(sc: SparkContext): Unit = synchronized {
+  def start(sc: SparkContext): Unit = start(sc, createListenerAndUI)
+
+  private[service] def start(
+      sc: SparkContext,
+      finishStartup: SparkContext => Unit): Unit = synchronized {
     if (started) {
       logWarning("The Spark Connect service has already started.")
       return
     }
 
-    sessionManager.initializeBaseSession(() =>
-      SparkSession.builder().sparkContext(sc).getOrCreate().newSession())
-    startGRPCService()
-    createListenerAndUI(sc)
+    // A stopped run can leave diagnostic fields behind. This attempt owns only new resources.
+    clearStartupState()
+    try {
+      sessionManager.initializeBaseSession(() =>
+        SparkSession.builder().sparkContext(sc).getOrCreate().newSession())
+      startGRPCService()
+      finishStartup(sc)
 
-    started = true
-    stopped = false
-    postSparkConnectServiceStarted()
+      started = true
+      stopped = false
+      postSparkConnectServiceStarted()
+    } catch {
+      case failure: Throwable =>
+        cleanupFailedStart(sc, failure)
+        throw failure
+    }
+  }
+
+  private def clearStartupState(): Unit = {
+    server = null
+    bindingAddress = null
+    uiTab = None
+    listener = null
+    executionListener = None
+    listenerBus = null
+  }
+
+  private def cleanupFailedStart(sc: SparkContext, failure: Throwable): Unit = {
+    val attemptServer = server
+    val attemptTab = uiTab
+    val attemptListener = listener
+    val attemptExecutionListener = executionListener
+    clearStartupState()
+    started = false
+    stopped = true
+
+    def cleanup(action: => Unit): Unit = {
+      try {
+        action
+      } catch {
+        case cleanupFailure: Throwable =>
+          if (cleanupFailure ne failure) failure.addSuppressed(cleanupFailure)
+          if (cleanupFailure.isInstanceOf[InterruptedException]) {
+            Thread.currentThread().interrupt()
+          }
+      }
+    }
+
+    cleanup {
+      if (attemptServer != null) {
+        attemptServer.shutdownNow()
+        if (!attemptServer.awaitTermination(5, TimeUnit.SECONDS)) {
+          throw new IllegalStateException("Failed Spark Connect server did not terminate.")
+        }
+      }
+    }
+    cleanup { attemptTab.foreach(_.detach()) }
+    cleanup {
+      if (attemptListener != null) sc.removeSparkListener(attemptListener)
+    }
+    cleanup { attemptExecutionListener.foreach(sc.removeSparkListener) }
+    cleanup { streamingSessionManager.shutdown() }
+    cleanup { executionManager.shutdown() }
+    cleanup { sessionManager.shutdown() }
   }
 
   def stop(timeout: Option[Long] = None, unit: Option[TimeUnit] = None): Unit = synchronized {

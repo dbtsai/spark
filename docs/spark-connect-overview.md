@@ -150,6 +150,65 @@ outside the Apache Spark repository as well. The Apache Software Foundation host
 [Rust](https://github.com/apache/spark-connect-rust) and
 [Swift](https://github.com/apache/spark-connect-swift), each released on its own schedule.
 
+## Experimental native frontend
+
+An optional, versioned frontend implementation JAR from
+[Apache spark-connect-rust](https://github.com/apache/spark-connect-rust) can serve Spark Connect
+requests while retaining the Spark JVM planner and execution engine. This experimental frontend
+currently supports batch workloads only. Structured Streaming is unsupported, and the frontend
+does not provide the Connect UI tab or Connect status/listener integration. Unsupported workloads
+are rejected.
+
+To use the Spark-side selector, supply a matching frontend implementation JAR with `--jars` or
+`--packages` and set `spark.connect.native.enabled=true` before driver startup. The experimental
+setting is disabled by default; the disabled path retains the JVM frontend without loading the
+native implementation. Match the frontend release to the Spark and Scala versions, operating
+system, and architecture. The project also provides an optional `SparkPlugin` that can be enabled
+through `spark.plugins` on supported Spark releases without changes to Spark itself; follow that
+release's installation and compatibility instructions. Combining the standalone
+`NativeConnectPlugin` with `SparkConnectPlugin` or `start-connect-server.sh` is unsupported.
+With `spark.connect.native.enabled=true`, conflicting plugin configuration or duplicate native
+ownership is rejected. With the flag disabled, the standalone plugin is inert and the other
+Connect entry point starts the normal JVM frontend.
+
+Before the first client request, the native implementation requires an application-owned default
+classic `SparkSession` using the same `SparkContext`. The dedicated `SparkConnectServer` entry
+point creates this session. The plugin listener may bind during context initialization, so
+applications must finish creating their default session before connecting clients. Until then,
+requests fail with `FAILED_PRECONDITION` and instructions to initialize the session. The native
+frontend creates private sessions using the default session's shared state, context and extensions.
+Runtime SQL configuration and session-local temporary views set on the default session are not
+inherited by native clients; global temporary views and cached data remain shared. The application
+owns the default session and context.
+
+The current native implementation binds to loopback only. An unset
+`spark.connect.grpc.binding.address` selects loopback, unlike the JVM frontend's wildcard default;
+an explicitly configured non-loopback address fails startup. The native frontend honors
+`spark.connect.grpc.binding.port` and requires `spark.connect.grpc.port.maxRetries=0`.
+Authentication tokens (`spark.connect.authenticate.token` or `SPARK_CONNECT_AUTHENTICATE_TOKEN`),
+configured gRPC interceptors (`spark.connect.grpc.interceptor.classes`), and Connect TLS are
+unsupported and each fails startup with a clear error.
+
+Native close applies the provider's drain and retry policy instead of the Java frontend's
+graceful-stop timeout. The current provider makes at most three ten-second native drain attempts;
+cleanup can add time. If close still fails, Spark retains ownership and retries on the next stop
+or start. `awaitTermination()` returns after the native drain completes; `close()` may still report
+Java-side cleanup failures and remains retryable. A listener that stops serving does not by itself
+complete the native-drain wait.
+
+For frontend implementers, the selector uses internal reflective API version 1. The implementation
+exposes public static `frontendApiVersion()` returning the integer `1`, and public static
+`start(SparkContext)` returning a fresh, exclusively caller-owned `AutoCloseable` handle; a second
+active start must fail. The handle's runtime class must be public and expose public
+`bindingAddress()` returning an `InetSocketAddress` and public `awaitTermination()` returning
+`void`. The implementation must not stop the caller-owned `SparkContext` or call back into the
+selector lifecycle during startup or close. Providers must enforce configured authentication or
+fail startup, and handle their drain/retry policy inside `close()`. A failed close retains
+ownership until a later close succeeds. `awaitTermination()` returns after native drain completes,
+even if Java-side cleanup fails; listener exit alone must not complete that wait. This contract is
+experimental and internal, not a stable public Spark extension API; use compatible, versioned
+frontend and Spark releases.
+
 ## Where to go from here
 
 * [Setting up Spark Connect](spark-connect-setup.html): start a Spark Connect server, connect

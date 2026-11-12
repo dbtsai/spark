@@ -24,8 +24,9 @@ import scala.sys.exit
 
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.connect.service.SparkConnectService
+import org.apache.spark.sql.connect.service.SparkConnectServerLifecycle
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.util.Utils
 
 /**
  * A simple main class method to start the spark connect server as a service for client tests
@@ -54,9 +55,12 @@ private[sql] object SimpleSparkConnectService {
         // scalastyle:off println
         println("No more client connections.")
         // scalastyle:on println
-        // Wait for 1 min for the server to stop
-        SparkConnectService.stop(Some(1), Some(TimeUnit.MINUTES))
-        sparkSession.close()
+        // Java waits up to 1 minute; native close uses its provider's drain/retry policy.
+        Utils.tryWithSafeFinally {
+          SparkConnectServerLifecycle.stop(1, TimeUnit.MINUTES)
+        } {
+          sparkSession.close()
+        }
         exit(0)
       }
     }
